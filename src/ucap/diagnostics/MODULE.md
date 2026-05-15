@@ -49,12 +49,19 @@ class ReportRecord:
     def from_line(cls, line: str) -> "ReportRecord": ...
 
 class ReportWriter:
-    def __init__(self, module_prefix: str, run_id: str,
-                 redactor: "Redactor" = Redactor.empty()) -> None: ...
+    def __init__(
+        self,
+        module_prefix: str,
+        run_id: str,
+        redactor: "Redactor" = Redactor.empty(),
+        template: "QCTemplate | None" = None,
+    ) -> None: ...
+    @property
+    def buffer_length(self) -> int: ...
     def emit(self, record: ReportRecord) -> None: ...
-    def flush(self, dest: TextIO = sys.stdout) -> None: ...
+    def flush(self, dest: TextIO | None = None) -> None: ...   # late-binds sys.stdout
     def __enter__(self) -> "ReportWriter": ...
-    def __exit__(self, *exc) -> None: ...
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None: ...
 
 REDACTION_CATEGORIES: tuple[str, ...] = ("DEV", "FW", "OP", "ID", "PATH", "SESS")
 
@@ -87,7 +94,8 @@ QC_REGISTRY: dict[str, QCTemplate]  # key: "{prefix-lower}:{artifact-type}"
 **Invariants**
 
 - **Leaf-node — no ucap imports.** `src/ucap/diagnostics/__init__.py` imports only stdlib (`dataclasses`, `enum`, `datetime`, `typing`, `sys`, `uuid`, `io`). Any `from ucap.*` import is a cycle and a hard error; enforced by `tests/test_diagnostics.py::test_no_ucap_imports` via AST scan.
-- **No free-text in report fields by construction.** `str`-typed entries in `ReportRecord.fields` accept only registered error codes or bounded-enum tokens registered for the record's `(module_prefix, artifact_type)` via `QCTemplate`. `ReportWriter.emit` rejects unregistered strings at validation time; `format_code(...)`'s `**kwargs` rejects unbounded `str`. This is the constructive guarantee behind `NFR-4` and the load-bearing property of `NFR-7`.
+- **No free-text in report fields by construction.** `str`-typed entries in `ReportRecord.fields` accept only registered error codes or bounded-enum tokens registered for the record's `(module_prefix, artifact_type)` via `QCTemplate`. `ReportWriter.emit` rejects unregistered strings at validation time. This is the constructive guarantee behind `NFR-4` and the load-bearing property of `NFR-7`.
+- **`format_code(...)` is a thin wrapper around `str.format`** — no runtime rejection of placeholder values. The bounded-token discipline applies at the compact-report boundary (`ReportRecord.fields` → `ReportWriter.emit` → `QCTemplate.validate_record`), not at `format_code`. `format_code`'s primary callers emit human-readable error messages to stderr / log (where `{path}` in `CLI-E001` and `{field}` in `QCT-W001` legitimately carry unbounded values for debuggability); what reaches compact reports is governed by separate, more rigorous machinery. *Note 2026-05-14*: this refines D-011 #5's stricter wording — the load-bearing invariant ("no free-text in report fields") is unchanged, but the implementation detail about *how* it is enforced is corrected to the actual mechanism.
 - **Defense-in-depth: redaction applied at line emit.** Every line produced by `record.to_line()` is passed through the configured `Redactor` before reaching the writer's buffer (no-op if `Redactor.empty()`). Substitution is longest-match-first over the JSON map's `(real → placeholder)` pairs. Placeholders match `<(DEV|FW|OP|ID|PATH|SESS)\d+>`. The redactor is loaded from `.ucap/state/<map>.json` via `--redact-with` (gitignored on-prem location per `NFR-6` and `[D-012]`).
 - **Error codes are immutable.** Once `ERROR_CODES["XXX-EYYY"]` is registered with a `message` template, neither the code identifier nor the message template changes. Deprecation flips `deprecated: True`; codes are never renumbered, reused, or deleted.
 - **All prefixes pre-registered at module load.** Loading `src/ucap/diagnostics/__init__.py` populates `PREFIX_REGISTRY` and `ERROR_CODES` to their full v1 content. A code's prefix not in `PREFIX_REGISTRY` raises `DGN-E002` at registry-load time. Collision (a prefix registered twice) raises `DGN-E001`.
