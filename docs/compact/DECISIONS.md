@@ -524,7 +524,7 @@ ucap today has none of those triggers: no ingestor modules, no generated code, n
 
 **Status**: Active
 **Date**: 2026-05-14
-**Context**: The user's work-PC QCAT (newer version, Rel-18 grammar) exports `UE Capability Information` messages in **ASN.1 value notation** with per-RAT containers held as opaque PER-encoded `OCTET STRING`s. This matches the canonical 3GPP spec shape — `UE-CapabilityRAT-Container ::= SEQUENCE { rat-Type RAT-Type, ue-CapabilityRAT-Container OCTET STRING }` per TS 36.331 / 38.331 — where the inner per-RAT capability payload is separately PER-encoded against `UE-EUTRA-Capability`, `UE-NR-Capability`, or `UE-MRDC-Capability` schemas. The indented tree format ucap originally targeted is **not** produced by this QCAT install, and the user confirmed no "expand recursively" / "decode nested" setting is available. v1 testing on the work PC being a project-defining requirement (PROJECT.md Constraints), ucap must handle both formats — neither shipping indented-only nor ASN.1-only satisfies v1.
+**Context**: A newer-version QCAT install (Rel-18 grammar) accessible to the user exports `UE Capability Information` messages in **ASN.1 value notation** with per-RAT containers held as opaque PER-encoded `OCTET STRING`s. This matches the canonical 3GPP spec shape — `UE-CapabilityRAT-Container ::= SEQUENCE { rat-Type RAT-Type, ue-CapabilityRAT-Container OCTET STRING }` per TS 36.331 / 38.331 — where the inner per-RAT capability payload is separately PER-encoded against `UE-EUTRA-Capability`, `UE-NR-Capability`, or `UE-MRDC-Capability` schemas. The indented tree format ucap originally targeted is **not** produced by this QCAT install, and the user confirmed no "expand recursively" / "decode nested" setting is available. v1 testing against this proprietary export workflow being a project-defining requirement (PROJECT.md Constraints), ucap must handle both formats — neither shipping indented-only nor ASN.1-only satisfies v1.
 
 **Decision**: v1 scope formally expands to include:
 
@@ -537,7 +537,7 @@ ucap today has none of those triggers: no ingestor modules, no generated code, n
 7. **New error codes** to be added in architecture phase: `QCT-E003` (ASN.1 syntax error in outer parser), `QCT-E004` (PER decode failure for inner OCTET STRING). `QCT-E002`'s `{validation_failure}` enum extends with `per_decode_failed`.
 
 **Why**:
-- Without this, ucap cannot be exercised against the user's real work-PC logs; v1's core use case is blocked. The cost (~1100-1500 new LOC + `asn1tools` dependency + bundled schemas as a maintenance artifact) is the price of v1 satisfying its actual workflow.
+- Without this, ucap cannot be exercised against the user's real source logs; v1's core use case is blocked. The cost (~1100-1500 new LOC + `asn1tools` dependency + bundled schemas as a maintenance artifact) is the price of v1 satisfying its actual workflow.
 - The user-directed simplification (skip the outer envelope; anchor on `message c1`; brace-match to EOM) cuts L1 effort by half compared to a general-purpose ASN.1 value-notation parser. ucap doesn't need to handle arbitrary `UL-DCCH-Message` content — only `ueCapabilityInformation` — so the grammar surface stays narrow.
 - `asn1tools` is well-maintained, pure Python, pip-installable, and idiomatic for 3GPP ASN.1 work. Adopting it is lower-risk than `pycrate` (bigger toolkit) or hand-rolling BER/PER (no leverage).
 - Bundling schemas (vs requiring user-side sourcing) keeps ucap as a tool rather than a kit. The maintenance burden — adding a new release's `.asn` files when a new 3GPP release matters — is real but bounded.
@@ -551,15 +551,93 @@ ucap today has none of those triggers: no ingestor modules, no generated code, n
 - **All five chat-mediated debugging pillars (`D-009`..`D-013`) apply uniformly to the new code path** — error codes extend (`QCT-E003`, `QCT-E004`), redaction extends, RPT/QC fields extend.
 - **Architecture phase will revisit `src/ucap/adapters/MODULE.md`** to add the new sub-module structure and may revisit `D-003` (per-vendor adapter pattern) if the QCAT-format-specific split requires a refinement.
 - **`D-002`'s `extra="forbid"` schema strictness** may surface tension at the L3 dict-to-Pydantic boundary if `asn1tools` decodes fields that ucap's canonical schema doesn't model. Architecture phase decides the policy (extend canonical schema, surface in `_unmapped`, or fail the decode).
-- **Paired test fixtures required for NFR-9** — same source UE Capability Information message exported in both indented tree format and ASN.1 value notation. Sourcing path is an architecture-phase open question; ideally the user re-exports one of the existing 5 fixtures from the work-PC QCAT.
+- **Paired test fixtures required for NFR-9** — same source UE Capability Information message exported in both indented tree format and ASN.1 value notation. Sourcing path is an architecture-phase open question; ideally the user re-exports one of the existing 5 fixtures from the QCAT install that produces the ASN.1 format.
 - **Sourcing the 3GPP `.asn` schemas** is an architecture-phase blocker. Candidates: extract from 3GPP TS PDFs (TS 36.331, TS 38.331) using `asn1tools.parse_files` against raw spec text; pull from open-source bundles (open5gs, OpenAirInterface, srsRAN); manual transcription. License compliance for redistributing 3GPP-copyrighted schemas needs verification — generally freely distributable for tooling but the exact terms should be checked.
 
 **Alternatives considered**:
-- *Ship v1 with indented-only, add ASN.1 in v1.5 / v2.* Rejected — user-confirmed v1 must support work-PC testing, which means the ASN.1 format must work in v1.
+- *Ship v1 with indented-only, add ASN.1 in v1.5 / v2.* Rejected — user-confirmed v1 must support the proprietary-source-log testing workflow, which means the ASN.1 format must work in v1.
 - *Use `pycrate` instead of `asn1tools`.* Viable — `pycrate` has built-in 3GPP coding helpers, bigger toolkit. Revisit only if `asn1tools` proves insufficient for Rel-18 features or for some specific message-decoding edge case.
 - *Hand-roll BER/PER decoding from scratch.* Rejected — substantial engineering with no leverage; `asn1tools` is mature and pure Python.
 - *Require the user to provide schemas at runtime.* Rejected — pushes sourcing burden onto every user; ucap should be a tool, not a kit.
 - *Parse the full `value UL-DCCH-Message ::= { ... }` envelope including arbitrary message types.* Rejected per user direction — ucap only cares about `ueCapabilityInformation`; full envelope parsing adds grammar surface for no payoff. Targeted `message c1 : ueCapabilityInformation` anchor + brace-matching EOM is sufficient.
+
+---
+
+## D-016: Schema sourcing strategy — OpenAirInterface primary, open5gs secondary, 3GPP TS direct as fallback
+
+**Status**: Active
+**Date**: 2026-05-14
+**Context**: `D-015` commits ucap v1 to bundling 3GPP RRC ASN.1 schemas for TS 36.331 + TS 38.331 across Rel-15..Rel-18 (8 files total) for PER-decoding inner per-RAT OCTET STRINGs via `asn1tools`. Direct re-transcription from 3GPP TS PDFs is impractical for routine maintenance; ucap should vendor existing extracted schemas from a license-compatible open-source source.
+
+**Decision**: Adopt a tiered sourcing strategy:
+
+1. **Primary: OpenAirInterface (OAI)** — open-source RAN reference implementation at `gitlab.eurecom.fr/oai/openairinterface5g`. Carries per-release ASN.1 modules for both TS 36.331 (E-UTRA RRC under `openair2/RRC/LTE/MESSAGES/ASN.1/`) and TS 38.331 (NR RRC under `openair2/RRC/NR/MESSAGES/ASN.1/`). License: OAI Public License v1.1 (modified BSD with patent retaliation clause) — compatible with ucap's Apache 2.0 with NOTICE attribution preserved.
+2. **Secondary: open5gs** — open-source 5G core at `github.com/open5gs/open5gs`, Apache 2.0 license. Used to fill any gaps OAI leaves (notably some Rel-18 content if OAI hasn't tracked it yet).
+3. **Fallback: direct 3GPP TS PDF extraction** — for any release/spec gap both (1) and (2) leave. 3GPP specs are © ETSI / 3GPP partners but generally permitted for tooling use; per-file copyright header preserved.
+
+**Bundling layout**:
+```
+src/ucap/schemas/
+├── SOURCES.md          # per-file provenance + license attribution
+├── rel15/
+│   ├── ts36331.asn
+│   └── ts38331.asn
+├── rel16/{ts36331.asn, ts38331.asn}
+├── rel17/{ts36331.asn, ts38331.asn}
+└── rel18/{ts36331.asn, ts38331.asn}
+```
+
+**License compliance**:
+- Project root `NOTICE` file aggregates third-party attributions.
+- Per-file copyright headers preserved in `.asn` files.
+- `src/ucap/schemas/SOURCES.md` documents source project + git tag/commit per file.
+
+**Why**:
+- OAI is the only candidate that covers both RAN-side specs (TS 36.331 + TS 38.331) and tracks releases as branches/tags. open5gs is core-network-first; pycrate's LGPL adds friction for source-file bundling; srsRAN's AGPL is incompatible with Apache 2.0 distribution.
+- A tiered strategy is more robust than picking one source — if OAI is incomplete or stale on a release, named fallbacks beat a from-scratch rebuild.
+- Vendoring vs runtime-fetching: ucap should be deterministic and offline-installable. Schema content is small (~few MB total) and changes infrequently per release.
+
+**Consequences**:
+- Architecture-phase work for `D-015` unblocks once `D-016` lands — the design can assume schemas will be present at `src/ucap/schemas/<release>/`.
+- A development-phase task lands before any L2 PER-decoding test: extract OAI schemas per release, verify with `asn1tools.compile_files`, commit with attribution. Estimated effort: half a day to a day.
+- `pyproject.toml` extends its hatch wheel `packages` config to include `src/ucap/schemas/` as package data (or include `*.asn` via `tool.hatch.build.targets.wheel.shared-data` / `force-include`).
+- License audit before commit — verify OAI Public License v1.1 terms for the specific Apache-licensed-tool-bundles-OAI-content case.
+- New 3GPP release becomes interesting → repeat extraction → new `rel<N>/` directory.
+
+**Alternatives considered**:
+- *pycrate's bundled definitions* — LGPL-3.0 source bundling is more complex than OAI's modified BSD; pycrate is a different toolkit (would mean adopting pycrate over `asn1tools`).
+- *srsRAN* — AGPL-3.0 incompatible with Apache 2.0 ucap distribution.
+- *Direct TS PDF extraction only* — high effort per release; brittle when 3GPP updates the spec wording.
+- *Runtime fetch of schemas* — defeats deterministic, offline-installable goal.
+
+**Verification status**: OAI's actual file structure, per-release labeling, and exact OAI Public License terms have not been independently verified in this session — descriptions above are from general knowledge. Verification deferred to development phase when the extraction work happens. If verification reveals OAI doesn't cover a release we need, the fallback chain handles it; if license terms turn out incompatible (unlikely), supersede with a `D-016b` naming open5gs as primary.
+
+---
+
+## D-017: Paired test fixture sourcing plan (NFR-9 round-trip verification)
+
+**Status**: Active
+**Date**: 2026-05-14
+**Context**: `D-015`'s `NFR-9` requires round-trip equivalence verification — same source `UE Capability Information` message exported in both indented tree format and ASN.1 value notation, parsed by ucap, with canonical output compared. Paired fixtures are the test artifact that pins the assertion. Source binary logs (proprietary format; `.qmdl` / `.isf` / `.hdf` etc.) for the existing 5 vendored fixtures are available to the user but cannot be shared with the dev LLM — the binaries themselves are proprietary content. Only the redacted text exports leave that environment.
+
+**Decision**: User produces **one** paired fixture by re-exporting one of the 5 existing fixtures' source binary log in ASN.1 value notation mode using a QCAT install that supports that export, applying the Pillar D redaction protocol to scrub any proprietary content not already redacted in the existing indented version, and committing the result as `tests/fixtures/qcat/asn1/<name>_ASN1.txt` alongside its indented counterpart at `tests/fixtures/qcat/<name>.txt`.
+
+**Scope**: One paired fixture is sufficient for v1's NFR-9 — round-trip equivalence is a structural assertion (parser-A and parser-B produce structurally equivalent canonical output), not a coverage requirement. Adding more pairs strengthens coverage but doesn't change the assertion's character. Selection of which fixture to pair is the user's call; richest candidates structurally are the S22 fixtures (more combos / more MRDC content).
+
+**Why**:
+- Production-realistic: same UE, same firmware, same capability advertisement — the only variable is the QCAT export format. That's exactly what NFR-9 wants to test.
+- One paired fixture is the minimum that satisfies the structural assertion. The other four can be paired later as a v1.5 or coverage-improvement task; not v1-blocking.
+- Pillar D redaction protocol already exists for proprietary content; the same discipline applies — the on-prem mapping handles any new categories the ASN.1 export surfaces.
+
+**Consequences**:
+- This blocker is **not architecture-gating** — architecture work for `D-015`'s adapter design can proceed without the paired fixture in hand. The fixture is needed at NFR-9 test-writing time during development phase.
+- New fixture path convention: `tests/fixtures/qcat/asn1/` for ASN.1-format fixtures; existing indented fixtures stay at `tests/fixtures/qcat/`. Tests register pairs by filename convention (`<name>.txt` ↔ `asn1/<name>_ASN1.txt`).
+- A reminder lands in `STATUS.md` Next: "before NFR-9 development, user produces one paired ASN.1 fixture from the proprietary source binary corresponding to one of the existing fixtures."
+
+**Alternatives considered**:
+- *All five fixtures paired* — overkill for NFR-9's assertion type; defer to coverage-improvement work.
+- *Capture a fresh UE Cap message (different from the 5 existing)* — the existing fixtures already passed redaction; reusing avoids fresh-content redaction overhead.
+- *Synthesize ASN.1 from the indented format on Claude's side* — defeats the point of round-trip equivalence (would test our encoding, not actual QCAT behavior).
 
 ---
 

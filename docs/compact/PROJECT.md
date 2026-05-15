@@ -15,7 +15,7 @@
 - Canonical flat JSON output per the Pydantic schema in `src/ucap/schema/`.
 - Stub adapters for Shannon DM and ELT raising `NotImplementedError` with clear messages.
 - Chat-mediated debugging surface — compact RPT / MET / QC report types, per-adapter `--diagnostic` / `--validate` CLI modes, redaction mapping protocol, output discipline rules (Pillars A–E from Topic 5; ratified as `D-009`..`D-013`).
-- Pytest regression suite against the 5 vendored indented fixtures (OnePlus9 LTE/NR, G960W LTE, S22 LTE/NR) plus paired ASN.1 fixtures sourced from the user's work-PC QCAT (per NFR-9; one paired fixture sufficient for v1 round-trip verification).
+- Pytest regression suite against the 5 vendored indented fixtures (OnePlus9 LTE/NR, G960W LTE, S22 LTE/NR) plus paired ASN.1 fixtures sourced from the user's QCAT install that produces the proprietary format (per NFR-9; one paired fixture sufficient for v1 round-trip verification).
 
 **Out of scope (explicit non-goals)**:
 - `ucap audit`, `ucap diff`, `ucap query` subcommands — planned, not v1.
@@ -36,7 +36,7 @@
 - ~~Redaction mapping file location — project-local `.ucap/state/` vs user-level `~/.config/ucap/`.~~ ✓ Resolved by `NFR-6` + `D-012`: project-local `.ucap/state/`, gitignored.
 - If / when `audit` consumes a compliance sheet authored by non-devs, that's a new contribution surface (spreadsheet → ingestion) needing architecture; not a v1 commitment.
 - **3GPP `.asn` schema sourcing** *(architecture-phase blocker per `D-015`)* — where to obtain canonical `.asn` files for TS 36.331 + TS 38.331 Rel-15..Rel-18 for bundling under `src/ucap/schemas/<release>/`. Candidates: extract from 3GPP TS PDFs via `asn1tools.parse_files`; pull from open-source bundles (open5gs / OpenAirInterface / srsRAN); manual transcription. License compliance for redistributing 3GPP-copyrighted schemas needs verification.
-- **Paired test fixtures for NFR-9** *(test-setup item per `D-015`)* — at least one `UE Capability Information` message exported in both indented tree format and ASN.1 value notation from the same source log, for round-trip equivalence verification. Plan: user re-exports one of the existing 5 fixtures' source from the work-PC QCAT in ASN.1 form, vetted and committed alongside `tests/fixtures/qcat/asn1/`.
+- **Paired test fixtures for NFR-9** *(test-setup item per `D-015`)* — at least one `UE Capability Information` message exported in both indented tree format and ASN.1 value notation from the same source log, for round-trip equivalence verification. Plan: user re-exports one of the existing 5 fixtures' proprietary source binary in ASN.1 form using a QCAT install that produces that format, vetted per Pillar D and committed under `tests/fixtures/qcat/asn1/`.
 
 **Contributors**:
 
