@@ -33,7 +33,7 @@ Note: `src/**/MODULE.md` files with `<!-- retrofit: skeleton -->` at the top are
 
 **Artifacts**:
 - `src/<module>/MODULE.md` doc-first drafts for every planned module (`src/ucap/`, `src/ucap/adapters/`, plus the new `src/ucap/diagnostics/` once designed). Curated sections filled; `<!-- BEGIN:STRUCTURE -->` / `<!-- END:STRUCTURE -->` markers present but empty (regen-map populates them).
-- `docs/compact/DECISIONS.md` — append-only ADR entries with sequential `D-XXX` IDs. First batch is `D-001`–`D-005` for Pillars A–E.
+- `docs/compact/DECISIONS.md` — append-only ADR entries with sequential `D-XXX` IDs. First architecture-phase batch is `D-009`–`D-013` for Pillars A–E (`D-001`–`D-007` are reconstructed; `D-008` is the partition decision).
 - `docs/compact/MAP.md` — regen-generated via `/regen-map`; never hand-edit.
 - Session state via `/close-session`.
 
