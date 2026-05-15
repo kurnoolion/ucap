@@ -7,7 +7,8 @@ Generated 2026-05-14 by regen-map. Do not hand-edit.
 | Module | Purpose | Status |
 |---|---|---|
 | [ucap](../../src/ucap/MODULE.md) | The user-facing top-level package: hosts the `ucap` console-script CLI (subcommand-style dispatcher) and the package version. | |
-| [ucap.adapters](../../src/ucap/adapters/MODULE.md) | Per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input. | |
+| [ucap.adapters](../../src/ucap/adapters/MODULE.md) | Umbrella module for per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input. | |
+| [ucap.adapters.qcat](../../src/ucap/adapters/qcat/MODULE.md) | Per-vendor parser for QCAT (Qualcomm Chipset Analyzer Toolkit) text exports of `UE Capability Information` messages. | |
 | [ucap.diagnostics](../../src/ucap/diagnostics/MODULE.md) | Owns the chat-mediated debugging vocabulary for ucap: error-code registry, three compact report types (RPT / MET / QC), and the fixed-field QC template machinery. | |
 | [ucap.schema](../../src/ucap/schema/MODULE.md) | Canonical schema for UE capability band combinations — Pydantic v2 models with `extra="forbid"` and the Literal type aliases (`Vendor`, `Release`, `RatName`, etc.) that every adapter and the CLI share. | |
 
@@ -16,17 +17,21 @@ Generated 2026-05-14 by regen-map. Do not hand-edit.
 ```mermaid
 flowchart TD
     m_adapters[adapters]
+    m_adapters_qcat[adapters.qcat]
     m_diagnostics[diagnostics]
     m_schema[schema]
     m_ucap[ucap]
     m_adapters --> m_diagnostics
     m_adapters --> m_schema
+    m_adapters_qcat --> m_diagnostics
+    m_adapters_qcat --> m_schema
     m_ucap --> m_adapters
+    m_ucap --> m_adapters_qcat
     m_ucap --> m_diagnostics
     m_ucap --> m_schema
 ```
 
-Graph is acyclic. `D-014`'s schema-into-sub-package split resolved the prior `ucap ↔ adapters` cycle.
+Graph is acyclic. `D-014` resolved the prior `ucap ↔ adapters` cycle via the schema split; `D-018` promotes qcat to a sub-module without introducing a new cycle.
 
 ## Project File Structure
 
@@ -58,11 +63,14 @@ ucap/
 │   └── ucap/                                  # The user-facing top-level package: hosts the `ucap` console-script CLI (subcommand-style dispatcher) and the package version.
 │       ├── MODULE.md
 │       ├── __init__.py
-│       ├── adapters/                          # Per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input.
+│       ├── adapters/                          # Umbrella module for per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input.
 │       │   ├── MODULE.md
 │       │   ├── __init__.py
 │       │   ├── elt.py                         # MediaTek ELT (Engineer Log Tool) adapter — stub.
-│       │   ├── qcat.py                        # QCAT log text parser and canonical mapper.
+│       │   ├── qcat/                          # Per-vendor parser for QCAT (Qualcomm Chipset Analyzer Toolkit) text exports of `UE Capability Information` messages.
+│       │   │   ├── MODULE.md
+│       │   │   ├── __init__.py                # QCAT adapter — auto-dispatches between indented tree and ASN.1 value notation formats.
+│       │   │   └── _indented.py               # QCAT log text parser and canonical mapper.
 │       │   └── shannon.py                     # Samsung Shannon DM (Exynos) log adapter — stub.
 │       ├── cli.py                             # Command-line entry point.
 │       ├── diagnostics/                       # Owns the chat-mediated debugging vocabulary for ucap: error-code registry, three compact report types (RPT / MET / QC), and the fixed-field QC template machinery.

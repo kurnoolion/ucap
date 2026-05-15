@@ -641,6 +641,63 @@ src/ucap/schemas/
 
 ---
 
+## D-018: qcat adapter promoted to sub-package; internal format dispatch
+
+**Status**: Active
+**Date**: 2026-05-14
+**Context**: `D-015` commits ucap v1 to handling two QCAT export formats — the existing indented tree (~900 LOC parser previously in `src/ucap/adapters/qcat.py`) and the new ASN.1 value notation with PER-decoded inner OCTET STRINGs (~1100-1500 LOC across L1 parser + L2 PER decoder + L3 dict-to-canonical mapper). Combined into one file, `qcat.py` would grow to ~2000-2500 LOC — past the readable single-file budget and mixing two unrelated parsers. The two implementations share canonical-mapping logic (combo label formatting, kind derivation, NR feature-set indirection resolution) but diverge entirely on input parsing. `FR-21` requires auto-detection at the dispatcher boundary; no caller-facing format choice.
+
+**Decision**: Promote `src/ucap/adapters/qcat.py` to a sub-package `src/ucap/adapters/qcat/` with three internal files:
+
+```
+src/ucap/adapters/qcat/
+├── MODULE.md         # contract for the qcat adapter (both formats)
+├── __init__.py       # public API + format auto-detection dispatcher (~50 LOC)
+├── _indented.py      # existing ~900 LOC parser (moved verbatim from old qcat.py)
+└── _asn1.py          # new ~1100-1500 LOC: L1 ASN.1 parser + L2 PER decoding
+                      # (via asn1tools) + L3 mapping to CanonicalUeCapability.
+                      # Lands during D-015 development; not in this commit.
+```
+
+The dispatcher in `__init__.py` reads the first ~50 lines of input, detects ASN.1 via the presence of `message c1 : ueCapabilityInformation` (per `FR-21`), and routes to `_indented.parse_qcat_text` or `_asn1.parse_qcat_text` accordingly. **Public API is unchanged** from the caller's perspective — `__init__.py` re-exports `TreeNode`, `Message`, `parse_qcat_file`, `parse_qcat_text`, `map_message_to_canonical`. Tests, CLI, and existing imports work without modification.
+
+**Shared canonical-mapping logic**: ~500-800 LOC of helpers (combo label formatting `n78A-n41A`, kind derivation, NR feature-set indirection resolution heuristics, BIT STRING handling) needed by both paths. Two options for development-phase delivery:
+- **(a)** Keep shared helpers in `_indented.py`; `_asn1.py` imports them via `from ucap.adapters.qcat._indented import _make_combo_label, _derive_fr, ...`.
+- **(b)** Extract to a new `_common.py` once duplication count exceeds ~3 functions or 5 cross-imported internal symbols.
+
+Architecture-phase commits to (a) initially; trigger (b) refactor when the cross-import surface from `_indented.py` to `_asn1.py` exceeds 5 internal symbols. Trigger is pinned here so development phase doesn't need to relitigate.
+
+**MODULE.md restructuring** (also delivered in this commit):
+- New `src/ucap/adapters/qcat/MODULE.md` — full contract for the qcat adapter covering both formats (Public surface, Invariants, Key choices, Non-goals, Depends on, Deferred).
+- `src/ucap/adapters/MODULE.md` becomes an **umbrella** — describes the vendor-adapter pattern, points at per-vendor MODULE.md files for adapters that have grown into sub-packages, and continues to list the public surface of flat-file adapters (`shannon.py`, `elt.py`).
+
+**Shannon and ELT stay as flat files** (`shannon.py`, `elt.py`) until they're implemented. When they reach comparable complexity, they can be promoted to sub-packages via the same pattern — decision per-adapter, not pre-committed.
+
+**Why**:
+- **Single file would be unmanageable.** 2000-2500 LOC mixing two unrelated parsers is hard to navigate, hard to test in isolation, becomes a magnet for unrelated changes. Sub-package preserves conceptual unity while giving each format its own implementation file.
+- **Sub-package over sibling files.** Sub-package gets its own dedicated MODULE.md — clean contract surface. Sibling files (`qcat_indented.py` + `qcat_asn1.py`) would need either a third dispatcher file or polluted parent MODULE.md.  The `D-011` precedent (diagnostics module as sub-package) applies for the same reason.
+- **One vendor flag, not two.** `--vendor qcat-indented` / `--vendor qcat-asn1` would violate `FR-21`'s auto-detection commitment.
+- **Asymmetry with shannon/elt is fine.** They're stubs; symmetry would be premature scaffolding.
+- **Zero import-statement changes for existing callers.** `from ucap.adapters.qcat import ...` resolves identically whether `qcat` is a file or sub-package.
+
+**Consequences**:
+- **`D-003` refined**: per-vendor adapter pattern still holds; the file-vs-sub-package choice is per-adapter, driven by internal complexity. `D-018` is the first adapter to promote to sub-package; `D-003`'s "one file per vendor" intent is preserved at the *adapter level*, not at the *.py-file level*.
+- **Migration is mechanical** — `git mv src/ucap/adapters/qcat.py src/ucap/adapters/qcat/_indented.py` plus a new `__init__.py` for the dispatcher. 93/93 tests pass post-move with no test changes.
+- **Existing `__all__` in `_indented.py`** is no longer the qcat-module-level public surface — it's now what `_indented.py` *exports to siblings* (i.e., what `_asn1.py` can import). The module-level public surface is set by `__init__.py`'s `__all__`.
+- **Error code registry additions** (development-phase task per D-015 / D-018): register `QCT-E003 ASN.1 syntax error at line {line}` and `QCT-E004 PER decode failure for inner OCTET STRING (rat_type={rat_type}): {failure_reason}` (failure_reason is a bounded enum per `D-009`/`D-011`). Extend `QCT-E002`'s `{validation_failure}` enum bucket with `per_decode_failed`.
+- **`src/ucap/adapters/MODULE.md`** rewritten umbrella-style (this commit). The qcat-specific content migrates into the new sub-package MODULE.md.
+- **`src/ucap/adapters/qcat/MODULE.md`** drafted (this commit) as the qcat adapter contract for both formats.
+- **`pyproject.toml`** unchanged for the package layout (hatch wheel's `packages = ["src/ucap"]` recursively covers the new sub-package).
+- **`regen-map`** picks up the new MODULE.md after the move; MAP.md gets a new row for the qcat sub-module (in addition to the existing adapters umbrella row).
+
+**Alternatives considered**:
+- *Single `qcat.py` with internal `_parse_indented` / `_parse_asn1` paths.* Rejected — file size unmanageable.
+- *Sibling files at the `adapters/` level: `qcat.py` (dispatcher) + `qcat_indented.py` + `qcat_asn1.py`.* Rejected — no MODULE.md slot for the adapter as a whole; pollutes the umbrella MODULE.md.
+- *Vendor-name split: `--vendor qcat-indented` / `--vendor qcat-asn1`.* Rejected — violates `FR-21`.
+- *Defer structural decision until L1 parser is partly written.* Rejected — structure determines what `_asn1.py` is and what helpers it imports; deciding now lets L1 implementation proceed cleanly.
+
+---
+
 ## D-014: Schema split into its own sub-package (`src/ucap/schema/`)
 
 **Status**: Active
