@@ -78,3 +78,36 @@ ADR-style append-only log. IDs are sequential and stable. Decisions are immutabl
 **Decision**: Every canonical model carries (a) a `_meta` field for adapter / source provenance (vendor, release, tool version, parse timestamps) and (b) an `_unmapped` field as a structured escape hatch for source-format content the adapter chose not to claim. Both are surfaced as JSON keys with leading underscores via Pydantic field aliases; Python attribute names are unprefixed.
 **Why**: TODO — fill in from team knowledge (candidates: `_`-prefixed JSON keys are a clear out-of-band marker that the value is meta vs canonical; forward-compatibility — adapter can preserve unrecognized content without violating `extra="forbid"`; debuggability — adapter source / tool version traveling with the parsed output makes regression triage cheaper).
 **Consequences**: Every adapter must populate `_meta` consistently. `_unmapped` is the documented place for "we saw this but didn't model it" — diff / audit / query tools must ignore it or surface it as opaque. Schema additions can pull content out of `_unmapped` into typed fields without breaking downstream JSON. Alternatives considered: TODO (allow `extra` permissively, separate sidecar metadata file, distinct request/response envelope).
+
+---
+
+## D-008: Code partitioning — core / customizations / config (adopted in principle; structural reorg deferred)
+
+**Status**: Active
+**Date**: 2026-05-14
+**Context**: A sibling project (hilda at `~/work/hilda`) established a three-tier code organization in its own `D-001`: `core/` for platform code shared across deployments, `customizations/` for per-deployment / per-customer artifacts (often code generated on-prem from proprietary inputs by ingestor modules), `config/` for per-deployment configuration. The pattern earns its keep when generated code, per-deployment data, or proprietary on-prem outputs would otherwise pollute the platform layer.
+
+ucap today has none of those triggers: no ingestor modules, no generated code, no per-customer compliance sheets, no per-deployment service config. v1's only per-deployment artifact is the redaction mapping (Pillar D — to be ratified in architecture phase as `D-012`), which is gitignored under `.ucap/state/` — *stronger* isolation than `customizations/` would give. The planned roadmap (`audit`, `diff`, `query`) does suggest future per-deployment artifacts: per-operator or per-customer compliance sheets for `audit`, possibly per-customer device-codename mappings.
+
+**Decision**: Adopt the three-tier rule **in principle**. When the first per-deployment / per-customer / per-operator artifact arrives, it lands under `customizations/<axis>/<id>/` rather than inline in `src/ucap/`. Configuration that varies by deployment (output preset, default vendor / release, audit rule-set selection) lands under `config/`. Until a concrete trigger fires (see below), no directory reorg — `src/ucap/` continues as the implicit platform tier.
+
+**Reorg trigger** — any of these fires the structural move:
+1. The first `audit` compliance sheet that's operator- or customer-specific.
+2. Device-codename redaction maps move from on-prem `.ucap/state/` into the repo as shared resources (a deliberate change of trust boundary, not an automatic consequence).
+3. A non-vendor third axis emerges (per-customer baselines, per-deployment override rules, multi-tenant config, etc.).
+4. A contributor finds themselves about to add a per-deployment artifact and has no natural home under `src/ucap/`.
+
+**Why**: Per hilda's `D-001` logic plus the "don't design for hypothetical requirements" rule. Importing the partition *concept* now is cheap and serves as a tripwire — the next time a per-deployment artifact would land, this entry directs it to `customizations/` instead of inline. Reorganizing the directory tree before any customization exists is aspirational churn against an empty plan; deferring keeps the working tree honest. The "free-now / expensive-later" argument that worked for master→main does **not** apply here: master→main is a content-free rename, whereas the core/customizations split bakes in a specific judgment about which tier each future artifact lives in — better to make that judgment when concrete content forces it.
+
+**Consequences**:
+- `docs/compact/structure-conventions.md` keeps the current single-tier Python convention; when the reorg trigger fires, it gains per-tier subsections (`### core` / `### customizations` / `### config`).
+- `docs/compact/MAP.md` continues listing modules under `src/ucap/`. Reorg trigger fires a new `MAP.md` plus updated MODULE.md paths.
+- **The redaction mapping (Pillar D) does NOT become a `customizations/` artifact.** It stays gitignored under `.ucap/state/`. Deliberate split: `customizations/` is for *in-repo shared per-deployment artifacts*; `.ucap/state/` is for *on-prem-only secrets / mappings the dev LLM must never see*.
+- **Hilda `D-003`'s public-vs-proprietary adapter split does NOT transfer.** ucap's vendor adapters (QCAT / Shannon DM / ELT) all parse proprietary vendor *output* formats, but the adapter *code* is reverse-engineered text-format handling with no proprietary content of its own — no ingestors, no codegen. All vendor adapters remain in the platform tier (whatever its name) even after the eventual reorg.
+- When architecture phase ratifies Pillars A–E (planned as `D-009`..`D-013`), each pillar should cross-reference this entry: any pillar-related artifact that's per-deployment (e.g., a per-operator default QC template baseline, a per-operator compliance rule-set) belongs in the future `customizations/` tier.
+- **Naming may shift at trigger time** — hilda's "customer" axis doesn't map cleanly to ucap's domain; the actual tier directory might be `operators/`, `customers/`, `deployments/`, or `tenants/` depending on what arrives first. The DECISIONS entry that fires the reorg will pin the names.
+
+**Alternatives considered**:
+- *Reorg now while the repo is tiny.* Rejected — real cost today (import renames, `pyproject.toml` hatch wheel target update, MODULE.md path edits, test invocation changes) against zero current payoff. The "do-it-cheap-now" argument from master→main doesn't transfer: master→main is content-free; this reorg encodes a judgment about future-artifact placement.
+- *Skip importing the concept entirely.* Rejected — the `audit` roadmap creates a clear pull toward per-operator artifacts; without this entry, the first such artifact would likely land inline under `src/ucap/audit/`, polluting the platform tier and making a later extraction painful.
+- *Import the partition in `structure-conventions.md` only, no DECISIONS entry.* Rejected — `structure-conventions.md` describes how the *current* code is organized; a forward-looking partition rule with named triggers belongs in DECISIONS.
