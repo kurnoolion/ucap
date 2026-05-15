@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+.venv/
+venv/
+.idea/
+.vscode/
+*.swp
+
+# COMPACT per-clone session binding (do not commit)
+.compact/
+
+# ucap redaction mapping — on-prem only, real names live here (do not commit)
+.ucap/
