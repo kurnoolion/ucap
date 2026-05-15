@@ -520,6 +520,49 @@ ucap today has none of those triggers: no ingestor modules, no generated code, n
 
 ---
 
+## D-015: v1 scope expansion — parse both QCAT text-export formats including PER decoding of inner per-RAT containers
+
+**Status**: Active
+**Date**: 2026-05-14
+**Context**: The user's work-PC QCAT (newer version, Rel-18 grammar) exports `UE Capability Information` messages in **ASN.1 value notation** with per-RAT containers held as opaque PER-encoded `OCTET STRING`s. This matches the canonical 3GPP spec shape — `UE-CapabilityRAT-Container ::= SEQUENCE { rat-Type RAT-Type, ue-CapabilityRAT-Container OCTET STRING }` per TS 36.331 / 38.331 — where the inner per-RAT capability payload is separately PER-encoded against `UE-EUTRA-Capability`, `UE-NR-Capability`, or `UE-MRDC-Capability` schemas. The indented tree format ucap originally targeted is **not** produced by this QCAT install, and the user confirmed no "expand recursively" / "decode nested" setting is available. v1 testing on the work PC being a project-defining requirement (PROJECT.md Constraints), ucap must handle both formats — neither shipping indented-only nor ASN.1-only satisfies v1.
+
+**Decision**: v1 scope formally expands to include:
+
+1. **(L1) Targeted ASN.1 value-notation parser** anchored at the `message c1 : ueCapabilityInformation : { ... }` block. Outer `value UL-DCCH-Message ::= { ... }` envelope intentionally skipped; end-of-message detected by brace matching from the opening `{` of the entry block. Walks nested SEQUENCEs / CHOICE-tagged values / SEQUENCE-OF lists / OCTET STRING literals (`'<hex>'H`). Comments are not expected in the format and not handled. ~250-300 LOC.
+2. **(L2) PER decoding** of inner per-RAT `ue-CapabilityRAT-Container` OCTET STRINGs via `asn1tools` (public, pure-Python PyPI package) against bundled 3GPP schemas. Dispatched by `rat-Type` enum value. ~200 LOC.
+3. **(L3) `asn1tools`-decoded dict → `CanonicalUeCapability` mapping**, parallel to the existing tree-based mapping in `qcat.py`. Reuses combo-merging, feature-set-indirection resolution, kind derivation, label-formatting logic where applicable; the input shape differs (dict vs `TreeNode`) but the canonical-output structure is identical. ~500-1000 LOC.
+4. **Format autodetection at dispatcher boundary** (FR-21). Discriminator: presence of `message c1 : ueCapabilityInformation` (or `message c1: ueCapabilityInformation`) → ASN.1 adapter; absent + `UE Capability Information (...)` title present → indented-tree adapter.
+5. **Round-trip equivalence verification** between formats (NFR-9).
+6. **Bundled 3GPP RRC schemas** for Rel-15, Rel-16, Rel-17, and Rel-18 (TS 36.331 + TS 38.331) under `src/ucap/schemas/<release>/`. The `--release` flag selects which release's schema is used at PER-decode time.
+7. **New error codes** to be added in architecture phase: `QCT-E003` (ASN.1 syntax error in outer parser), `QCT-E004` (PER decode failure for inner OCTET STRING). `QCT-E002`'s `{validation_failure}` enum extends with `per_decode_failed`.
+
+**Why**:
+- Without this, ucap cannot be exercised against the user's real work-PC logs; v1's core use case is blocked. The cost (~1100-1500 new LOC + `asn1tools` dependency + bundled schemas as a maintenance artifact) is the price of v1 satisfying its actual workflow.
+- The user-directed simplification (skip the outer envelope; anchor on `message c1`; brace-match to EOM) cuts L1 effort by half compared to a general-purpose ASN.1 value-notation parser. ucap doesn't need to handle arbitrary `UL-DCCH-Message` content — only `ueCapabilityInformation` — so the grammar surface stays narrow.
+- `asn1tools` is well-maintained, pure Python, pip-installable, and idiomatic for 3GPP ASN.1 work. Adopting it is lower-risk than `pycrate` (bigger toolkit) or hand-rolling BER/PER (no leverage).
+- Bundling schemas (vs requiring user-side sourcing) keeps ucap as a tool rather than a kit. The maintenance burden — adding a new release's `.asn` files when a new 3GPP release matters — is real but bounded.
+
+**Consequences**:
+- **v1 effort budget expands by ~1100-1500 LOC** (L1 ~300, L2 ~200, L3 ~500-1000) plus bundled `.asn` schema files. New v1 total approximately 2200-2500 LOC.
+- **`pyproject.toml` gains `asn1tools`** as a runtime dependency. Version pin chosen in architecture phase.
+- **Distribution package grows** by ~few MB per Rel-N (`.asn` schema bundles under `src/ucap/schemas/<release>/`).
+- **Schema maintenance** becomes an ongoing concern: new 3GPP releases require bundling new schema files plus extending the `Release` literal type in `schema.py`.
+- **Two adapter code paths to maintain** — `qcat_indented` (the existing `qcat.py`, possibly renamed) and `qcat_asn1` (the new module). Architecture phase decides whether they live as sibling files under `src/ucap/adapters/` or as one umbrella `qcat` module with internal dispatch.
+- **All five chat-mediated debugging pillars (`D-009`..`D-013`) apply uniformly to the new code path** — error codes extend (`QCT-E003`, `QCT-E004`), redaction extends, RPT/QC fields extend.
+- **Architecture phase will revisit `src/ucap/adapters/MODULE.md`** to add the new sub-module structure and may revisit `D-003` (per-vendor adapter pattern) if the QCAT-format-specific split requires a refinement.
+- **`D-002`'s `extra="forbid"` schema strictness** may surface tension at the L3 dict-to-Pydantic boundary if `asn1tools` decodes fields that ucap's canonical schema doesn't model. Architecture phase decides the policy (extend canonical schema, surface in `_unmapped`, or fail the decode).
+- **Paired test fixtures required for NFR-9** — same source UE Capability Information message exported in both indented tree format and ASN.1 value notation. Sourcing path is an architecture-phase open question; ideally the user re-exports one of the existing 5 fixtures from the work-PC QCAT.
+- **Sourcing the 3GPP `.asn` schemas** is an architecture-phase blocker. Candidates: extract from 3GPP TS PDFs (TS 36.331, TS 38.331) using `asn1tools.parse_files` against raw spec text; pull from open-source bundles (open5gs, OpenAirInterface, srsRAN); manual transcription. License compliance for redistributing 3GPP-copyrighted schemas needs verification — generally freely distributable for tooling but the exact terms should be checked.
+
+**Alternatives considered**:
+- *Ship v1 with indented-only, add ASN.1 in v1.5 / v2.* Rejected — user-confirmed v1 must support work-PC testing, which means the ASN.1 format must work in v1.
+- *Use `pycrate` instead of `asn1tools`.* Viable — `pycrate` has built-in 3GPP coding helpers, bigger toolkit. Revisit only if `asn1tools` proves insufficient for Rel-18 features or for some specific message-decoding edge case.
+- *Hand-roll BER/PER decoding from scratch.* Rejected — substantial engineering with no leverage; `asn1tools` is mature and pure Python.
+- *Require the user to provide schemas at runtime.* Rejected — pushes sourcing burden onto every user; ucap should be a tool, not a kit.
+- *Parse the full `value UL-DCCH-Message ::= { ... }` envelope including arbitrary message types.* Rejected per user direction — ucap only cares about `ueCapabilityInformation`; full envelope parsing adds grammar surface for no payoff. Targeted `message c1 : ueCapabilityInformation` anchor + brace-matching EOM is sufficient.
+
+---
+
 ## D-014: Schema split into its own sub-package (`src/ucap/schema/`)
 
 **Status**: Active

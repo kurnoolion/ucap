@@ -35,6 +35,13 @@ How to use this file:
 - **FR-13** — ucap supports a validation mode (CLI flag candidate `--validate`) that emits a compact QC line: schema-valid flag, unknown-field count, index-out-of-range count, and Y/N flags per known parser invariant. *(Anchors Pillar B.)*
 - **FR-14** — ucap supports a redaction mode in which an on-prem JSON mapping of real → placeholder strings is forward-applied to every emitted RPT / MET / QC report before output. Placeholder categories: `<DEV{N}>` (device), `<FW{N}>` (firmware), `<OP{N}>` (operator), `<ID{N}>` (serial / IMEI / IMSI), `<PATH{N}>` (path), `<SESS{N}>` (session ID); indices are stable per real value across runs. *(Anchors Pillar D.)*
 
+*FR-20 through FR-23 cover the v1 scope expansion locked in `D-015`: parsing the ASN.1 value-notation QCAT export format with PER-decoded inner per-RAT containers, alongside the indented tree format already covered above.*
+
+- **FR-20** — ucap accepts QCAT exports in **ASN.1 value notation**. The parser entry point is the `message c1 : ueCapabilityInformation : { ... }` block; the outer `value UL-DCCH-Message ::= { ... }` envelope is intentionally skipped, and the end of each message body is detected by brace matching from the opening `{` of the entry block. Within the entry block, ucap walks nested `{}` SEQUENCEs, comma-separated fields, CHOICE tagging (`<field-name> <variant> :`), SEQUENCE-OF as `{ {...}, {...} }` lists, and OCTET STRING as `'<hex>'H` literals. A file containing multiple UE Capability Information messages yields multiple canonical records, one per `message c1 : ueCapabilityInformation :` occurrence. *(Anchors `D-015`.)*
+- **FR-21** — ucap auto-detects the input format from file content. Discriminator: presence of `message c1 : ueCapabilityInformation` (or `message c1: ueCapabilityInformation`) → ASN.1 adapter; absent + `UE Capability Information (...)` title present → indented-tree adapter. No `--format` CLI flag.
+- **FR-22** — For ASN.1 value-notation input, ucap PER-decodes the per-RAT `ue-CapabilityRAT-Container` OCTET STRING against the appropriate 3GPP RRC schema (TS 36.331 for `rat-Type eutra`; TS 38.331 for `rat-Type nr` / `eutra-nr`) to extract band-combination content. Decoding uses `asn1tools` (public PyPI package) against schemas bundled with the ucap distribution.
+- **FR-23** — ucap bundles 3GPP RRC ASN.1 schemas for Rel-15, Rel-16, Rel-17, and Rel-18 (TS 36.331 + TS 38.331) under `src/ucap/schemas/<release>/`. The `--release` flag selects which release's schema is used for PER decoding. Mismatched release between input and selected schema surfaces as a `QCT-E002` canonical-validation failure with the `{validation_failure}` enum extended to include `per_decode_failed`.
+
 ## Non-functional
 
 - **NFR-1** — For each vendored fixture under `tests/fixtures/qcat/`, ucap produces EUTRA / NR / MRDC combo counts and source mixes that match the expected values pinned in `tests/test_qcat.py`. Regressions fail CI.
@@ -45,6 +52,10 @@ How to use this file:
 - **NFR-6** — The redaction mapping file lives only under `.ucap/state/` (gitignored). ucap has no mechanism to commit redaction-mapping content to any in-repo location.
 - **NFR-7** — RPT / MET / QC output from any ucap CLI invocation, when paired with the redaction mapping if used, is safe to paste into a chat conversation with Claude without leaking proprietary log content. NFR-4 + NFR-6 are the constructive guarantees that produce this property; NFR-7 names it as the load-bearing v1 invariant of the limited-LLM-access model.
 - **NFR-8** — The full pytest suite completes in under 30 seconds on a single core. Today trivially met; pinned as a regression budget against future fixture additions.
+- **NFR-9** — Both supported input formats (indented tree and ASN.1 value notation) produce structurally equivalent canonical output for equivalent input. Verified by paired fixtures — same source message exported in both formats — with equivalence pinned at the band-combination level (combo counts, source mix, kind distribution, per-CC capabilities). `_meta.sourceFile` and `_meta.timestamp` are exempt from the equality check. *(Anchors `D-015`.)*
+- **NFR-10** — Format detection is correctness-load-bearing. A wrong dispatch is a parse failure (`QCT-E001`), not a silent miscompute. False-positive on ASN.1 and false-negative are both fail-stop, not best-effort.
+- **NFR-11** — The bundled 3GPP schemas live under `src/ucap/schemas/<release>/{ts36331,ts38331}.asn`. Schema updates accompany ucap releases; no runtime schema loading from external sources. *(Anchors `D-015`.)*
+- **NFR-12** — `asn1tools` is a hard runtime dependency for v1, pinned in `pyproject.toml`. v1 cannot be installed without it.
 
 ## Deferred
 

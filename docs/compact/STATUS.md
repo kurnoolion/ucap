@@ -1,6 +1,6 @@
 # Status
 
-**Active phase**: architecture
+**Active phase**: requirements
 **Last updated**: 2026-05-14
 
 ## Done
@@ -16,6 +16,8 @@
 - 2026-05-14 — `D-013` logged: Pillar E ratified — formal line grammar, reserved characters (`|` and `\n` rejected at emit), 30-line per-session cap (target 15), lowercase snake_case field-name convention, timestamp format `YYYY-MM-DDTHH:MM:SSZ`. Emit-boundary order pinned: validate → to_line → redact → buffer. **All five chat-mediated debugging pillars (A–E) now ratified as `D-009`–`D-013`.**
 - 2026-05-14 — `D-014` logged + executed: schema split into its own sub-package (`src/ucap/schema/__init__.py`) to resolve the `ucap ↔ adapters` package-level cycle that surfaced during MODULE.md curation. Zero import-statement changes (Python treats `ucap.schema` identically whether file or package). New `src/ucap/schema/MODULE.md` drafted.
 - 2026-05-14 — Retrofit MODULE.md skeletons for `src/ucap/` and `src/ucap/adapters/` curated; `<!-- retrofit: skeleton -->` sentinels removed from both. All four module contracts (`ucap`, `ucap.adapters`, `ucap.schema`, `ucap.diagnostics`) now drafted with real Purpose / Public surface / Invariants / Key choices (D-XXX anchors) / Non-goals / Depends on / Depended on by.
+- 2026-05-14 — Diagnostics module implemented (checkpoints 1–5 in development phase): `src/ucap/diagnostics/__init__.py` 721 LOC + `tests/test_diagnostics.py` 1021 LOC, 78 new tests (93 total, all passing). Pillar A registries (ErrorSeverity / ErrorCode / PREFIX_REGISTRY / 12 ERROR_CODES / get_code / format_code) + Pillar A record (ReportType / ReportRecord with to_line/from_line) + Pillar D Redactor + Pillar E enforcement (line grammar / 30-line cap / reserved chars) + Pillar C registry (QCField / QCTemplate / QC_REGISTRY with 2 pre-registered templates: qcat:parse_diagnostic 22 fields, qcat:parse_validation 9 fields) + Pillar B emit pipeline (ReportWriter validate → to_line → redact → buffer). Three soft-flag candidates pending close-session triage: format_code's bounded-token rule refined to apply at ReportWriter.emit only; ReportWriter gained optional `template: QCTemplate | None` param; ReportWriter.flush default changed from `dest=sys.stdout` to `dest=None` with late-bind for capsys compatibility.
+- 2026-05-14 — Switched to requirements phase for v1 scope expansion. `FR-20`..`FR-23` + `NFR-9`..`NFR-12` + `D-015` logged: ucap v1 parses **both** QCAT text-export formats — indented tree (already shipped) AND ASN.1 value notation with PER-decoded inner per-RAT containers (new). Adds `asn1tools` dependency + bundled 3GPP `.asn` schemas (Rel-15..Rel-18 of TS 36.331 + TS 38.331). Effort estimate ~1100-1500 new LOC. Driver: work-PC testing requires the ASN.1 format and no QCAT-side recursive-decode option is available.
 
 ## In progress
 
@@ -26,8 +28,15 @@
 - ~~Fill MODULE.md skeletons module-by-module (remove `<!-- retrofit: skeleton -->` sentinel once each is curated). Two seeded: `src/ucap/MODULE.md`, `src/ucap/adapters/MODULE.md`.~~ ✓ Done 2026-05-14 (both curated; sentinels removed; new `src/ucap/schema/MODULE.md` added via `D-014`).
 - ~~Ratify the five limited-LLM-access pillars (A–E from `project-init-interview.md` Topic 5) as DECISIONS entries `D-009` through `D-013`.~~ ✓ Done 2026-05-14.
 - ~~Draft `src/ucap/diagnostics/MODULE.md` (or `src/ucap/diagnostics.py` if single-file is the right scale for v1) — Pillar C.~~ ✓ Done 2026-05-14 as part of `D-011`.
-- Briefly visit `/switch-phase requirements` to populate `docs/compact/requirements.md` with v1 FR / NFR covering current QCAT behavior + the chat-mediated debugging pillars.
+- ~~Briefly visit `/switch-phase requirements` to populate `docs/compact/requirements.md` with v1 FR / NFR covering current QCAT behavior + the chat-mediated debugging pillars.~~ ✓ Done 2026-05-14 (FR-1..FR-19 + NFR-1..NFR-8; then 2026-05-14 expansion via `D-015` for FR-20..FR-23 + NFR-9..NFR-12).
 - Run `/drift-check design` once enough MODULE.md skeletons are curated, to surface code capabilities lacking an owning FR / NFR.
+- **`/switch-phase architecture` for the ASN.1 + PER decoding adapter design** (per `D-015`). Open items to resolve in that phase:
+  - Adapter file layout — single `qcat.py` with internal format dispatch, vs sibling `qcat_indented.py` + `qcat_asn1.py`. Revisit `D-003` if the latter.
+  - Schema sourcing path — extract from 3GPP TS PDFs vs pull from open-source bundles vs manual transcription. License compliance verification.
+  - Paired-fixture plan — which source log to re-export in both formats from the work-PC QCAT.
+  - Add error codes `QCT-E003` (ASN.1 syntax error), `QCT-E004` (PER decode failure) to the diagnostics registry; extend `QCT-E002`'s `{validation_failure}` enum to include `per_decode_failed`.
+  - Update `src/ucap/adapters/MODULE.md` for the new sub-module structure.
+  - Pin `asn1tools` version in `pyproject.toml`.
 
 ## Flags
 
