@@ -522,8 +522,9 @@ ucap today has none of those triggers: no ingestor modules, no generated code, n
 
 ## D-015: v1 scope expansion — parse both QCAT text-export formats including PER decoding of inner per-RAT containers
 
-**Status**: Active
+**Status**: Active *(partially superseded by `D-019`; see Consequences)*
 **Date**: 2026-05-14
+**Partially superseded by**: `D-019` — the `asn1tools` decoder choice is replaced with `pycrate`; D-015's overall scope (parse both formats, L1/L2/L3 layers, autodetection, NFR-9 round-trip) remains in force.
 **Context**: A newer-version QCAT install (Rel-18 grammar) accessible to the user exports `UE Capability Information` messages in **ASN.1 value notation** with per-RAT containers held as opaque PER-encoded `OCTET STRING`s. This matches the canonical 3GPP spec shape — `UE-CapabilityRAT-Container ::= SEQUENCE { rat-Type RAT-Type, ue-CapabilityRAT-Container OCTET STRING }` per TS 36.331 / 38.331 — where the inner per-RAT capability payload is separately PER-encoded against `UE-EUTRA-Capability`, `UE-NR-Capability`, or `UE-MRDC-Capability` schemas. The indented tree format ucap originally targeted is **not** produced by this QCAT install, and the user confirmed no "expand recursively" / "decode nested" setting is available. v1 testing against this proprietary export workflow being a project-defining requirement (PROJECT.md Constraints), ucap must handle both formats — neither shipping indented-only nor ASN.1-only satisfies v1.
 
 **Decision**: v1 scope formally expands to include:
@@ -565,13 +566,14 @@ ucap today has none of those triggers: no ingestor modules, no generated code, n
 
 ## D-016: Schema sourcing strategy — OpenAirInterface primary, open5gs secondary, 3GPP TS direct as fallback
 
-**Status**: Active
+**Status**: Superseded by `D-019` (entire entry)
 **Date**: 2026-05-14
+**Superseded by**: `D-019` — schemas come from `pycrate` at runtime; no ucap-internal bundling. This entry remains as historical record of the sourcing strategy that would have applied if `asn1tools` were a viable decoder. Revivable if a future release forces re-sourcing.
 **Context**: `D-015` commits ucap v1 to bundling 3GPP RRC ASN.1 schemas for TS 36.331 + TS 38.331 across Rel-15..Rel-18 (8 files total) for PER-decoding inner per-RAT OCTET STRINGs via `asn1tools`. Direct re-transcription from 3GPP TS PDFs is impractical for routine maintenance; ucap should vendor existing extracted schemas from a license-compatible open-source source.
 
 **Decision**: Adopt a tiered sourcing strategy:
 
-1. **Primary: OpenAirInterface (OAI)** — open-source RAN reference implementation at `gitlab.eurecom.fr/oai/openairinterface5g`. Carries per-release ASN.1 modules for both TS 36.331 (E-UTRA RRC under `openair2/RRC/LTE/MESSAGES/ASN.1/`) and TS 38.331 (NR RRC under `openair2/RRC/NR/MESSAGES/ASN.1/`). License: OAI Public License v1.1 (modified BSD with patent retaliation clause) — compatible with ucap's Apache 2.0 with NOTICE attribution preserved.
+1. **Primary: OpenAirInterface (OAI)** — open-source RAN reference implementation at `gitlab.eurecom.fr/oai/openairinterface5g`. Carries per-release ASN.1 modules for both TS 36.331 (E-UTRA RRC under `openair2/RRC/LTE/MESSAGES/ASN.1/`) and TS 38.331 (NR RRC under `openair2/RRC/NR/MESSAGES/ASN.1/`). License: **Collaborative Standards Software License (CSSL) v1.0** (Apache-2.0-derived structure, with a restricted patent grant — Section 3.1 grants patent license only for "study, testing, and research purposes"; Section 3.2 requires good-faith FRAND negotiation for other uses). Acceptable for ucap as a research / tooling project; downstream commercial use of ucap entails a latent FRAND obligation against essential patents bundled with the schemas. User accepted this constraint 2026-05-14. Redistribution per CSSL Section 5: preserve LICENSE, NOTICE, copyright headers — equivalent to Apache-2.0-style obligations. *Note 2026-05-14*: this corrects an earlier reference in this entry to "OAI Public License v1.1" — that license name was incorrect; CSSL v1.0 is what OAI actually uses (confirmed by `LICENSE` file at the OAI repo root and per-file `SPDX-License-Identifier: LicenseRef-CSSL-1.0` markers).
 2. **Secondary: open5gs** — open-source 5G core at `github.com/open5gs/open5gs`, Apache 2.0 license. Used to fill any gaps OAI leaves (notably some Rel-18 content if OAI hasn't tracked it yet).
 3. **Fallback: direct 3GPP TS PDF extraction** — for any release/spec gap both (1) and (2) leave. 3GPP specs are © ETSI / 3GPP partners but generally permitted for tooling use; per-file copyright header preserved.
 
@@ -593,7 +595,7 @@ src/ucap/schemas/
 - `src/ucap/schemas/SOURCES.md` documents source project + git tag/commit per file.
 
 **Why**:
-- OAI is the only candidate that covers both RAN-side specs (TS 36.331 + TS 38.331) and tracks releases as branches/tags. open5gs is core-network-first; pycrate's LGPL adds friction for source-file bundling; srsRAN's AGPL is incompatible with Apache 2.0 distribution.
+- OAI is the only candidate that covers both RAN-side specs (TS 36.331 + TS 38.331) and tracks releases as branches/tags. open5gs is core-network-first; pycrate's LGPL adds friction for source-file bundling; srsRAN's AGPL is incompatible with Apache 2.0 distribution. **(Caveat verified 2026-05-14: OAI's `master` LTE canonical file is `lte-rrc-16.13.0.asn1` — Rel-16 only; Rel-17 LTE is not in OAI. Per Q2 follow-up: Rel-17 LTE is sourced from a secondary path (pycrate or 3GPP direct), tracked in `SOURCES.md`.)**
 - A tiered strategy is more robust than picking one source — if OAI is incomplete or stale on a release, named fallbacks beat a from-scratch rebuild.
 - Vendoring vs runtime-fetching: ucap should be deterministic and offline-installable. Schema content is small (~few MB total) and changes infrequently per release.
 
@@ -610,7 +612,11 @@ src/ucap/schemas/
 - *Direct TS PDF extraction only* — high effort per release; brittle when 3GPP updates the spec wording.
 - *Runtime fetch of schemas* — defeats deterministic, offline-installable goal.
 
-**Verification status**: OAI's actual file structure, per-release labeling, and exact OAI Public License terms have not been independently verified in this session — descriptions above are from general knowledge. Verification deferred to development phase when the extraction work happens. If verification reveals OAI doesn't cover a release we need, the fallback chain handles it; if license terms turn out incompatible (unlikely), supersede with a `D-016b` naming open5gs as primary.
+**Verification status (updated 2026-05-14)**: OAI's actual file structure and license were verified during the Phase-1 (Rel-17 schema sourcing) execution. Findings:
+- OAI's CMake declares canonical files via `LTE_RRC_GRAMMAR` (Rel-16: `lte-rrc-16.13.0.asn1`) and `NR_RRC_GRAMMAR` (Rel-17: `nr-rrc-17.3.0.asn1`) variables.
+- License is **CSSL v1.0**, not "OAI Public License v1.1" as originally written (corrected above).
+- NR Rel-17 sourced from OAI as primary; LTE Rel-17 missing from OAI — secondary source (pycrate or 3GPP direct via OAI's `extract_asn1_from_spec.pl`) per Q2 resolution.
+- For non-Rel-17 releases (Rel-15, Rel-16, Rel-18), sourcing decisions deferred until those releases become milestone-relevant. The tiered chain (OAI → open5gs → 3GPP direct) remains the policy.
 
 ---
 
@@ -695,6 +701,77 @@ Architecture-phase commits to (a) initially; trigger (b) refactor when the cross
 - *Sibling files at the `adapters/` level: `qcat.py` (dispatcher) + `qcat_indented.py` + `qcat_asn1.py`.* Rejected — no MODULE.md slot for the adapter as a whole; pollutes the umbrella MODULE.md.
 - *Vendor-name split: `--vendor qcat-indented` / `--vendor qcat-asn1`.* Rejected — violates `FR-21`.
 - *Defer structural decision until L1 parser is partly written.* Rejected — structure determines what `_asn1.py` is and what helpers it imports; deciding now lets L1 implementation proceed cleanly.
+
+---
+
+## D-019: Pivot decoder from `asn1tools` to `pycrate`; eliminate schema-bundling layer
+
+**Status**: Active
+**Date**: 2026-05-14
+**Supersedes (in part)**: `D-015` (specifically the `asn1tools` choice in Decision item 2); `D-016` (entire schema-sourcing strategy made moot by pycrate-bundled schemas).
+
+**Context**: During Phase 1 execution of `D-015`'s plan (source 3GPP `.asn` schemas + use `asn1tools` for L2 PER decoding), `asn1tools.compile_files()` failed against both the OAI-sourced `nr-rrc-17.3.0.asn1` (TS 38.331 Rel-17 v17.3.0) and pycrate's `NR-RRC-Definitions.asn` (Rel-17 v17.4.0) with the same compile error: `Type 'SetupRelease' not found in module 'NR-RRC-Definitions'`.
+
+`SetupRelease { ElementTypeParam }` is a **parameterized ASN.1 type** — pervasive throughout 3GPP RRC for "setup or release this configuration" pattern (`SetupRelease { LocationMeasurementInfo }`, `SetupRelease { BT-NameList-r16 }`, etc.). `asn1tools` has documented limitations on parameterized type definitions; for 3GPP RRC schemas specifically, it cannot compile the grammar in its current form. The failure is not source-of-file-specific — both OAI and pycrate `.asn` files trip the same path. Pre-processing the `.asn` to inline parameterized types is essentially what pycrate already does at compile time; re-inventing it is unjustifiable engineering.
+
+`pycrate` **does** handle 3GPP RRC ASN.1 natively (it was designed for it). Verification: `from pycrate_asn1dir import RRCNR, RRCLTE` exposes precompiled schemas; `UE-NR-Capability`, `UE-MRDC-Capability`, `UL-DCCH-Message` from TS 38.331 v17.4.0, plus `UE-EUTRA-Capability` from TS 36.331 v17.4.0 — all four types ucap needs are present and callable.
+
+**Decision**: Switch ucap's L2 PER decoder from `asn1tools` to `pycrate`, and eliminate the local schema-bundling layer entirely:
+
+1. **L2 PER decoding** uses pycrate's precompiled ASN.1 modules:
+   - `pycrate_asn1dir.RRCNR.NR_RRC_Definitions.UE_NR_Capability` for `rat-Type nr`.
+   - `pycrate_asn1dir.RRCNR.NR_RRC_Definitions.UE_MRDC_Capability` for `rat-Type eutra-nr`.
+   - `pycrate_asn1dir.RRCLTE.EUTRA_RRC_Definitions.UE_EUTRA_Capability` for `rat-Type eutra`.
+   - `pycrate_asn1dir.RRCNR.NR_RRC_Definitions.UL_DCCH_Message` available for any outer-envelope work (not currently exercised — outer parsed at L1).
+2. **No bundled `src/ucap/schemas/<release>/` infrastructure** — pycrate ships its own schemas as precompiled Python modules under `pycrate_asn1dir/`. Released ucap installations get the schemas via the `pycrate` PyPI dependency, not via a ucap-internal bundle.
+3. **pyproject.toml runtime dependency**: `pycrate>=0.8.1`. License: LGPL-2.1. Runtime linking from Apache 2.0 ucap is the standard LGPL exemption pattern.
+4. **Single-version-per-spec constraint** (acknowledged): pycrate ships TS 36.331 v17.4.0 (LTE) and TS 38.331 v17.4.0 (NR), both Rel-17 (2023-03 freeze). Earlier-release messages (Rel-15, Rel-16) decode against the Rel-17 schema because 3GPP RRC ASN.1 extensions are additive — older content is a structural subset of newer. Rel-18-specific IEs would not decode (Rel-17 schema lacks them); for ucap's v1 milestone (Rel-17 testing), this is exactly the right coverage.
+5. **pycrate is archived upstream** (last commit 2024-03-08; repo marked "Archived"). No future 3GPP-release updates from pycrate maintainers expected. **If Rel-18 schema support becomes load-bearing**, follow-up options: (a) fork pycrate and add Rel-18; (b) switch to a different toolkit; (c) supersede this decision. For v1 (Rel-17 milestone), the archive status is not blocking.
+
+**Why**:
+- **`asn1tools` doesn't work** for the actual schemas — that's a binary outcome, not a judgment call. Investigation confirmed in Phase 1 execution.
+- **pycrate is the de facto Python toolkit for 3GPP ASN.1** — it's what telecom Python projects use because it handles 3GPP's parameterized types, extension markers, BIT STRINGs, and OCTET STRING wrapping natively.
+- **Eliminating the schema-bundling layer is a substantial simplification** — `src/ucap/schemas/<release>/` infrastructure, per-file attribution, license aggregation, NOTICE management, schema-extraction tooling, per-release maintenance work — all goes away. The architecture becomes leaner.
+- **LGPL-2.1 runtime linking** from Apache 2.0 is well-established. pycrate is not statically linked into ucap; it's an importable PyPI dependency that the user installs. No license aggregation issues.
+- **Single-version coverage matches the v1 milestone** — Rel-17 is what we need; pycrate provides exactly that. Multi-release coverage (D-015's original promise) is reframed: ucap accepts `--release rel15..rel18` from the user as metadata, decodes against pycrate's Rel-17 schema, and the result is correct for content that lives in the spec subset pycrate carries.
+
+**Consequences**:
+
+**Reverts the schema-bundling work**:
+- `src/ucap/schemas/` directory tree (previously copied but uncommitted) removed.
+- License-text files at `src/ucap/schemas/LICENSES/` no longer needed.
+- The OAI clone at `/tmp/oai-rel17` and the pycrate clone at `/tmp/pycrate` were investigation artifacts; safe to delete.
+
+**Affects existing decisions**:
+- **`D-015`** retains its scope expansion (both formats, L1/L2/L3 layers, autodetection, NFR-9 round-trip). The specific `asn1tools` dependency mention is superseded by this entry; D-015 should be read as "L2 PER decoding via the toolkit specified in D-019 (pycrate)."
+- **`D-016`** is entirely superseded — pycrate ships the schemas; OAI / open5gs / 3GPP-direct sourcing is no longer the path. D-016 remains as historical record of the sourcing strategy that would have applied if asn1tools were viable; it might be revived later if Rel-18 forces a re-source.
+- **`D-018`** is unaffected — qcat sub-package layout (`__init__.py` dispatcher + `_indented.py` + `_asn1.py`) holds. `_asn1.py`'s L2 implementation now uses pycrate instead of asn1tools; layout decision survives.
+- **`D-009`..`D-013`** (chat-mediated debugging pillars) — unaffected. Error code prefix scheme, report types, redaction, output discipline all hold. `QCT-E004` (PER decode failure) registry entry is now phrased "pycrate decode failure" instead of "asn1tools decode failure"; same intent.
+
+**Affects requirements**:
+- **`FR-22`** (decoding via asn1tools): struck through; superseded by new **FR-24** (decoding via pycrate).
+- **`FR-23`** (bundled schemas at `src/ucap/schemas/<release>/`): struck through; superseded by new **FR-25** (pycrate-provided schemas; `--release` is metadata input + pycrate-version cross-reference).
+- **`NFR-11`** (bundled schema layout): removed; pycrate provides schemas; no in-repo bundle.
+- **`NFR-12`** (asn1tools hard dep): struck through; superseded by new **NFR-13** (pycrate hard dep).
+
+**Architecture-phase work this triggers**:
+- Update `requirements.md` per the supersessions above.
+- Update `STATUS.md` Done + Next.
+- Re-check `src/ucap/adapters/qcat/MODULE.md` for any asn1tools-specific text → update to pycrate.
+
+**Effort impact**:
+- Phase 1 collapses from ~half day (source OAI schemas + write SOURCES.md) to ~10 minutes (declare pycrate dep).
+- Phase 4 (L2 PER decoding) simplifies — pycrate's API is `module.UE_NR_Capability.from_uper(bytes)`. Estimate drops from ~1 day to ~half day.
+- Total milestone effort revised: ~5-7 days (was 7-10).
+
+**Alternatives considered**:
+- *Pre-process the `.asn` files to inline parameterized types.* Rejected — engineering this correctly is essentially recapitulating pycrate's compile step. Not worth re-inventing.
+- *Hybrid: pycrate for decoding, asn1tools for some narrower use.* Rejected — no use case justifies the second dependency.
+- *Fork asn1tools and add parameterized-type support.* Rejected — substantial upstream work; not where ucap should invest.
+- *Defer the Rel-17 milestone until asn1tools support arrives.* Rejected — indefinite blocker on a tool that hasn't shown signs of adding this support.
+- *Bundle pycrate's `.asn` files instead of importing pycrate.* Considered briefly — pointless since pycrate's runtime is what makes them usable. Importing pycrate is simpler.
+
+**Reversibility**: If pycrate proves unworkable for some unforeseen reason during Phase 4 implementation, superseding this decision via `D-019b` is straightforward — restore D-016's bundling strategy with a different toolkit (e.g., fork-of-asn1tools or hand-rolled wrapper around `pycrate_asn1c.parser`). Not anticipated; flagged for completeness.
 
 ---
 

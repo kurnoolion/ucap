@@ -11,7 +11,7 @@
 **In scope for v1**:
 - `ucap parse` for **QCAT** exports — LTE + NR + MRDC EN-DC band combinations, Rel-15 through Rel-18 grammar.
 - `ucap parse` accepts **both** QCAT export formats: the indented tree format (FR-2..FR-9) and the ASN.1 value notation form with PER-decoded inner per-RAT containers (FR-20..FR-23 per `D-015`). Format auto-detected; same canonical output for both.
-- 3GPP RRC ASN.1 schemas (TS 36.331 + TS 38.331) for Rel-15..Rel-18 bundled with the distribution under `src/ucap/schemas/<release>/`. `asn1tools` as a runtime dependency.
+- 3GPP RRC ASN.1 schemas (TS 36.331 + TS 38.331 v17.4.0) provided by `pycrate` (runtime PyPI dependency, LGPL-2.1) per `D-019`. No ucap-internal schema bundle. `--release rel15..rel18` is metadata input; PER decoding uses pycrate's Rel-17 v17.4.0 schemas, which decode Rel-15/16 messages too (additive 3GPP extensions); Rel-18-specific IEs surface as `QCT-E004`.
 - Canonical flat JSON output per the Pydantic schema in `src/ucap/schema/`.
 - Stub adapters for Shannon DM and ELT raising `NotImplementedError` with clear messages.
 - Chat-mediated debugging surface — compact RPT / MET / QC report types, per-adapter `--diagnostic` / `--validate` CLI modes, redaction mapping protocol, output discipline rules (Pillars A–E from Topic 5; ratified as `D-009`..`D-013`).
@@ -35,7 +35,7 @@
 - ~~Single-file `src/ucap/diagnostics.py` vs sub-package `src/ucap/diagnostics/` for the diagnostics module — pick during architecture.~~ ✓ Resolved by `D-009` A5 + `D-011`: sub-package with single `__init__.py`; split trigger at prefix-count > 8 or QCTemplate-count > 6.
 - ~~Redaction mapping file location — project-local `.ucap/state/` vs user-level `~/.config/ucap/`.~~ ✓ Resolved by `NFR-6` + `D-012`: project-local `.ucap/state/`, gitignored.
 - If / when `audit` consumes a compliance sheet authored by non-devs, that's a new contribution surface (spreadsheet → ingestion) needing architecture; not a v1 commitment.
-- **3GPP `.asn` schema sourcing** *(architecture-phase blocker per `D-015`)* — where to obtain canonical `.asn` files for TS 36.331 + TS 38.331 Rel-15..Rel-18 for bundling under `src/ucap/schemas/<release>/`. Candidates: extract from 3GPP TS PDFs via `asn1tools.parse_files`; pull from open-source bundles (open5gs / OpenAirInterface / srsRAN); manual transcription. License compliance for redistributing 3GPP-copyrighted schemas needs verification.
+- ~~**3GPP `.asn` schema sourcing** *(architecture-phase blocker per `D-015`)* — where to obtain canonical `.asn` files for TS 36.331 + TS 38.331 Rel-15..Rel-18 for bundling under `src/ucap/schemas/<release>/`.~~ ✓ Resolved 2026-05-14 by `D-019`: pycrate provides schemas as a runtime dependency; no ucap-internal bundling. The original sourcing strategy (OAI / open5gs / 3GPP direct, per `D-016`) was made moot when investigation revealed `asn1tools` cannot compile 3GPP RRC parameterized types.
 - **Paired test fixtures for NFR-9** *(test-setup item per `D-015`)* — at least one `UE Capability Information` message exported in both indented tree format and ASN.1 value notation from the same source log, for round-trip equivalence verification. Plan: user re-exports one of the existing 5 fixtures' proprietary source binary in ASN.1 form using a QCAT install that produces that format, vetted per Pillar D and committed under `tests/fixtures/qcat/asn1/`.
 
 **Contributors**:
