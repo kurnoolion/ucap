@@ -8,7 +8,7 @@ Generated 2026-05-14 by regen-map. Do not hand-edit.
 |---|---|---|
 | [ucap](../../src/ucap/MODULE.md) | The user-facing top-level package: hosts the `ucap` console-script CLI (subcommand-style dispatcher) and the package version. | |
 | [ucap.adapters](../../src/ucap/adapters/MODULE.md) | Per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input. | |
-| [ucap.diagnostics](../../src/ucap/diagnostics/MODULE.md) | Owns the chat-mediated debugging vocabulary for ucap: error-code registry, three compact report types (RPT / MET / QC), and the fixed-field QC template machinery. | [DRAFT] |
+| [ucap.diagnostics](../../src/ucap/diagnostics/MODULE.md) | Owns the chat-mediated debugging vocabulary for ucap: error-code registry, three compact report types (RPT / MET / QC), and the fixed-field QC template machinery. | |
 | [ucap.schema](../../src/ucap/schema/MODULE.md) | Canonical schema for UE capability band combinations — Pydantic v2 models with `extra="forbid"` and the Literal type aliases (`Vendor`, `Release`, `RatName`, etc.) that every adapter and the CLI share. | |
 
 ## Dependency graph
@@ -66,7 +66,8 @@ ucap/
 │       │   └── shannon.py                     # Samsung Shannon DM (Exynos) log adapter — stub.
 │       ├── cli.py                             # Command-line entry point.
 │       ├── diagnostics/                       # Owns the chat-mediated debugging vocabulary for ucap: error-code registry, three compact report types (RPT / MET / QC), and the fixed-field QC template machinery.
-│       │   └── MODULE.md
+│       │   ├── MODULE.md
+│       │   └── __init__.py                    # Diagnostics: error codes and compact report types for chat-mediated debugging.
 │       └── schema/                            # Canonical schema for UE capability band combinations — Pydantic v2 models with `extra="forbid"` and the Literal type aliases (`Vendor`, `Release`, `RatName`, etc.) that every adapter and the CLI share.
 │           ├── MODULE.md
 │           └── __init__.py                    # Canonical schema for UE capability band combinations.
@@ -80,5 +81,6 @@ ucap/
     │       ├── OnePlus9_NR.txt
     │       ├── S22_LTE.txt
     │       └── S22_NR.txt
+    ├── test_diagnostics.py                    # Tests for the diagnostics module (D-009 / D-011 / D-012 / D-013).
     └── test_qcat.py                           # Tests for the QCAT adapter against vendored sample fixtures.
 ```

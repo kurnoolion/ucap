@@ -41,5 +41,4 @@
 ## Flags
 
 - **Limited LLM access** — Claude does not have access to actual logs. All testing / debugging uses compact redacted reports per Pillars A–E (`project-init-interview.md` Topic 5). This constraint applies to every phase prompt and to all module designs that emit diagnostic output.
-- **Repo uncommitted** — v1 code, fixtures, README, STATUS, and new `docs/compact/` scaffold are all in working tree only. No commits yet.
-- **Retrofit skeletons present** — `src/ucap/MODULE.md` and `src/ucap/adapters/MODULE.md` carry `<!-- retrofit: skeleton -->` sentinels; `close-session`'s hard-flag audit is suspended for those files until the sentinel is removed.
+- **D-015 architecture-phase blockers** — (a) Source 3GPP `.asn` schemas for TS 36.331 + TS 38.331 across Rel-15..Rel-18 for bundling under `src/ucap/schemas/<release>/`; license compliance for redistributing 3GPP-copyrighted schemas needs verification. (b) Source paired test fixtures (same `UE Capability Information` message in both indented tree format and ASN.1 value notation) for NFR-9 round-trip verification. Both gate the start of architecture work for D-015.
