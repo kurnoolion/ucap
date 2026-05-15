@@ -20,6 +20,7 @@
 - 2026-05-14 — Switched to requirements phase for v1 scope expansion. `FR-20`..`FR-23` + `NFR-9`..`NFR-12` + `D-015` logged: ucap v1 parses **both** QCAT text-export formats — indented tree (already shipped) AND ASN.1 value notation with PER-decoded inner per-RAT containers (new). Adds `asn1tools` dependency + bundled 3GPP `.asn` schemas (Rel-15..Rel-18 of TS 36.331 + TS 38.331). Effort estimate ~1100-1500 new LOC. Driver: the proprietary QCAT export format the user works with emits ASN.1 value notation with opaque inner OCTET STRINGs and offers no recursive-decode option.
 - 2026-05-14 — Architecture-phase blockers from `D-015` resolved: `D-016` logged (schema sourcing strategy — OpenAirInterface primary, open5gs secondary, direct 3GPP TS extraction as fallback; bundled under `src/ucap/schemas/<release>/`; license compliance via NOTICE + per-file headers; verification deferred to development phase). `D-017` logged (paired test fixture plan — user produces one paired ASN.1 fixture from a proprietary source binary corresponding to one of the existing 5 fixtures, redacted per Pillar D, committed under `tests/fixtures/qcat/asn1/`; one pair is sufficient for NFR-9's structural assertion). Architecture work for `D-015` adapter design can now proceed without further blockers.
 - 2026-05-14 — `D-018` logged + executed: qcat adapter promoted to sub-package. `src/ucap/adapters/qcat.py` → `src/ucap/adapters/qcat/{__init__.py, _indented.py}` plus the post-development `_asn1.py`. Public API unchanged for callers; 93/93 tests still pass post-move. New `src/ucap/adapters/qcat/MODULE.md` drafted as the adapter contract covering both formats; `src/ucap/adapters/MODULE.md` rewritten as the cross-adapter umbrella pointing at per-vendor sub-modules. Shannon and ELT remain flat-file stubs (qcat-specific deferred items FR-15..FR-18 migrated to qcat/MODULE.md; FR-19 stays at the umbrella level).
+- 2026-05-14 — Architecture-phase work for `D-015` effectively complete. All design decisions for the v1 scope expansion are anchored: `D-015` (scope), `D-016` (schema sourcing), `D-017` (paired-fixture plan), `D-018` (adapter sub-package). Architecture-phase exit criteria all met. Remaining Next items are mechanical implementation tasks (error-code registrations, `asn1tools` version pin) suitable for development phase.
 
 ## In progress
 
@@ -32,14 +33,14 @@
 - ~~Draft `src/ucap/diagnostics/MODULE.md` (or `src/ucap/diagnostics.py` if single-file is the right scale for v1) — Pillar C.~~ ✓ Done 2026-05-14 as part of `D-011`.
 - ~~Briefly visit `/switch-phase requirements` to populate `docs/compact/requirements.md` with v1 FR / NFR covering current QCAT behavior + the chat-mediated debugging pillars.~~ ✓ Done 2026-05-14 (FR-1..FR-19 + NFR-1..NFR-8; then 2026-05-14 expansion via `D-015` for FR-20..FR-23 + NFR-9..NFR-12).
 - Run `/drift-check design` once enough MODULE.md skeletons are curated, to surface code capabilities lacking an owning FR / NFR.
-- **`/switch-phase architecture` for the ASN.1 + PER decoding adapter design** (per `D-015`). Blockers resolved 2026-05-14 by `D-016` + `D-017`; remaining architecture-phase items:
-  - ~~Adapter file layout~~ ✓ Resolved 2026-05-14 by `D-018` (qcat promoted to sub-package; `_indented.py` + future `_asn1.py`).
-  - ~~Update `src/ucap/adapters/MODULE.md` for the new sub-module structure.~~ ✓ Done 2026-05-14 (umbrella restructure; new qcat/MODULE.md).
-  - Add error codes `QCT-E003` (ASN.1 syntax error), `QCT-E004` (PER decode failure) to the diagnostics registry; extend `QCT-E002`'s `{validation_failure}` enum to include `per_decode_failed`. *(Architecture-phase contract addition; development-phase implementation.)*
-  - Pin `asn1tools` version in `pyproject.toml`. *(Architecture-phase commitment; development-phase pin.)*
-- **Development-phase follow-ups** from the resolved blockers:
+- **`/switch-phase development qcat`** to begin the `D-015` adapter implementation (L1 outer parser + L2 PER decoding + L3 dict-to-canonical mapping in `src/ucap/adapters/qcat/_asn1.py`).
+  - **Architecture-phase items folded into the dev session** (mechanical, no design debate):
+    - Register `QCT-E003` (ASN.1 syntax error at line {line}) + `QCT-E004` (PER decode failure for inner OCTET STRING) in `src/ucap/diagnostics/__init__.py`'s `ERROR_CODES`; extend `QCT-E002`'s `{validation_failure}` enum to include `per_decode_failed`.
+    - Pin `asn1tools` version in `pyproject.toml`.
+- **Development-phase prerequisites** (from `D-016` + `D-017`):
   - **(per `D-016`)** Extract OAI ASN.1 schemas for Rel-15..Rel-18 of TS 36.331 + TS 38.331, verify with `asn1tools.compile_files`, commit under `src/ucap/schemas/<release>/` with `SOURCES.md` attribution. Half a day to a day of focused work. License audit before commit.
   - **(per `D-017`)** User produces one paired ASN.1 fixture from a proprietary source binary corresponding to one of the existing 5 fixtures; redacted per Pillar D; committed under `tests/fixtures/qcat/asn1/`. Needed before NFR-9 test development.
+- **Optional**: `/drift-check dev-module qcat` before substantive `_asn1.py` work, to verify alignment between the new `qcat/MODULE.md` contract and the existing `_indented.py` code.
 
 ## Flags
 
