@@ -1,42 +1,50 @@
-<!-- retrofit: skeleton -->
 # ucap
 
 **Purpose**
-TODO — retrofit skeleton; please fill in. This is the top-level Python package: CLI entry point (`cli.py`), canonical schema (`schema.py`), package metadata (`__init__.py`). Submodules (`adapters/`, future `diagnostics/`) get their own MODULE.md.
+The user-facing top-level package: hosts the `ucap` console-script CLI (subcommand-style dispatcher) and the package version. v1 wires the `parse` subcommand; `audit`, `diff`, `query` are reserved as future subcommands. Serves `FR-6` (release selector), `FR-7` (subcommand CLI shape), `FR-8` (stub-adapter messaging), `FR-12`–`FR-14` (chat-mediated debugging entry points: `--diagnostic` / `--validate` / `--redact-with`).
 
 **Public surface**
-<!-- Candidates observed in code (curate; don't copy verbatim): -->
-<!-- From src/ucap/__init__.py: -->
-<!-- - __version__: str -->
-<!-- From src/ucap/cli.py: -->
-<!-- - def main(argv: list[str] | None = None) -> int  # registered as `ucap` console script in pyproject.toml -->
-<!-- From src/ucap/schema.py — type aliases: -->
-<!-- - Vendor: Literal["qcat", "shannon", "elt"] -->
-<!-- - Release: Literal["rel15", "rel16", "rel17", "rel18"] -->
-<!-- - RatName: Literal["eutra", "nr", "mrdc"] -->
-<!-- - CaBandwidthClass, Modulation, FrequencyRange, PowerClassNR -->
-<!-- - EutraComboSource, NrComboSource, MrdcComboSource, NrComboKind, MrdcComboKind -->
-<!-- From src/ucap/schema.py — Pydantic models: -->
-<!-- - Meta, EutraBand, EutraComboBandEntry, EutraCaCombination, EutraSection -->
-<!-- - NrBand, NrComboBandEntry, NrBandCombination, NrSection -->
-<!-- - MrdcBandCombination, MrdcSection -->
-<!-- - CanonicalUeCapability  # top-level canonical output type -->
-TODO
+
+```python
+__version__: str                                   # package version (currently "0.1.0")
+def main(argv: list[str] | None = None) -> int    # CLI entry point; registered as the `ucap` console script
+```
+
+The CLI's user-facing surface (flag set, subcommand list, output forms) is *also* a public contract even though it's exercised through `main()`:
+
+```
+ucap parse <log> --vendor <qcat|shannon|elt> [--release rel15|rel16|rel17|rel18]
+                                            [-o <path>] [--compact]
+                                            [--diagnostic] [--validate]
+                                            [--run-id <slug>] [--redact-with <path>]
+```
+
+Future subcommands (`audit` / `diff` / `query`) land as additional `sub.add_parser(...)` arms in `_build_parser`.
 
 **Invariants**
-TODO — likely candidates worth committing to:
-- `extra="forbid"` on every Pydantic model — emitting an undeclared field is a schema-discipline failure.
-- `_meta` / `_unmapped` JSON aliases must round-trip through Pydantic validation unchanged.
-- `CanonicalUeCapability` is the single canonical output type — all adapters map into it.
+
+- **One console script: `ucap`.** Single entry point; subcommands dispatched within `main()`. No per-subcommand console scripts (`ucap-parse`, `ucap-audit`, etc.).
+- **Adapter dispatch is by `--vendor` value.** The CLI selects adapter by the `Vendor` literal value from `src/ucap/schema/`; new vendors require both a `Vendor` literal addition and a dispatcher arm in `_parse_log`. Plugin loading is explicitly out of scope (`[D-003]`).
+- **`--release` argument is validated against `Release` literals** at argparse time via `get_args(Release)`. Adding a release value is additive across the project.
+- **Error paths emit prefixed `CLI-E???` codes** via `ucap.diagnostics.format_code` rather than raising `Exception(...)` directly. Current `print(f"error: ...", file=sys.stderr)` + `return 2` pattern in `_cmd_parse` and `raise SystemExit(f"unsupported vendor: ...")` in `_parse_log` are development-phase soft-flag candidates to convert (`CLI-E001` file-not-found, `CLI-E002` unsupported-vendor; registered in `[D-011]`).
+- **`--diagnostic` / `--validate` replace canonical JSON on stdout** rather than appending or duplexing (`[D-010]`). Both are independently usable; combining emits RPT then QC, in that order.
+- **`--run-id` is opaque to the CLI** — passed verbatim to `ReportWriter`. UUIDv4 default applied at the dispatcher boundary when the flag is omitted.
 
 **Key choices**
-TODO — link to DECISIONS entries once architecture phase formalizes them. Candidates: Pydantic v2 over hand-rolled dicts; flat canonical shape focused on band combinations; per-vendor adapter pattern under `adapters/`.
+
+- `[D-001]` — Python 3.11+ as the language floor.
+- `[D-006]` — subcommand-style CLI with `audit` / `diff` / `query` slots pre-shaped for future work.
+- `[D-010]` — `--diagnostic` / `--validate` / `--run-id` flag set + replace-don't-duplex toggle semantics + the field menus for QCAT.
+- `[D-011]` — `CLI-E001` / `CLI-E002` codes registered in the central diagnostics registry; `format_code` / `get_code` used at every error path.
+- `[D-012]` — `--redact-with <path>` flag; loaded `Redactor` threaded into `ReportWriter` constructor.
 
 **Non-goals**
-TODO — likely:
-- Not a 3GPP ASN.1 decoder (we parse vendor text exports, not raw ASN.1 BER/PER).
-- Not a runtime / service — CLI batch tool only.
-- Per-band `mimo-ParametersPerBand` and `scsSupported` deferred to a later release.
+
+- **Not a service or daemon.** ucap is a batch CLI; no long-running process, no port binding, no scheduler.
+- **Not a plugin loader.** Adapters are statically registered in `_parse_log`'s dispatch arms. New vendors require source changes, not configuration.
+- **Not a web UI.** Future stakeholder interfaces beyond CLI (e.g., compliance-sheet ingestion for `audit`) require dedicated modules per `[D-008]`, not extensions of this package.
+- **Not a schema definition.** Canonical types live in `src/ucap/schema/` (`[D-014]`); this package only references them.
+- **Not a parser.** Per-vendor parsing lives in `src/ucap/adapters/`; this package only dispatches to it.
 
 <!-- BEGIN:STRUCTURE -->
 _Regenerated 2026-05-14 by regen-map. Do not hand-edit._
@@ -51,40 +59,12 @@ _Regenerated 2026-05-14 by regen-map. Do not hand-edit._
 - `_cmd_parse` — function — internal — Handler for the `parse` subcommand.
 - `_parse_log` — function — internal — Dispatch to the per-vendor adapter.
 - `main` — function — pub — CLI entry point; registered as the `ucap` console script.
-
-### `schema.py`
-
-- `CaBandwidthClass` — type alias — pub — Carrier-aggregation bandwidth-class enum (A–F).
-- `CanonicalUeCapability` — class — pub — Root canonical UE-capability document.
-- `EutraBand` — class — pub — A single supported EUTRA band entry.
-- `EutraCaCombination` — class — pub — An EUTRA CA band combination.
-- `EutraComboBandEntry` — class — pub — One band entry inside an EUTRA combo.
-- `EutraComboSource` — type alias — pub — Source list an EUTRA combo came from.
-- `EutraSection` — class — pub — EUTRA section of the canonical document.
-- `FrequencyRange` — type alias — pub — NR frequency range (FR1 / FR2).
-- `Meta` — class — pub — Per-message provenance metadata.
-- `Modulation` — type alias — pub — Per-CC modulation order (qam64 / qam256 / qam1024).
-- `MrdcBandCombination` — class — pub — A combo from the dedicated UE-MRDC-Capability container.
-- `MrdcComboKind` — type alias — pub — Kind of MRDC combo (endc / nedc / nrdc).
-- `MrdcComboSource` — type alias — pub — Source list an MRDC combo came from.
-- `MrdcSection` — class — pub — MRDC section of the canonical document.
-- `NrBand` — class — pub — A single supported NR band entry.
-- `NrBandCombination` — class — pub — An NR / dual-connectivity band combination.
-- `NrComboBandEntry` — class — pub — One component-carrier in an NR or EN-DC band combination.
-- `NrComboKind` — type alias — pub — Kind of NR / dual-connectivity combo (caNR / endc / nedc / nrdc).
-- `NrComboSource` — type alias — pub — Source list an NR combo came from.
-- `NrSection` — class — pub — NR section of the canonical document.
-- `PowerClassNR` — type alias — pub — NR UE power class (pc1dot5 / pc2 / pc3 / pc5).
-- `RatName` — type alias — pub — Radio-Access-Technology name (eutra / nr / mrdc).
-- `Release` — type alias — pub — 3GPP grammar release (rel15 / rel16 / rel17 / rel18).
-- `Vendor` — type alias — pub — Chipset-vendor modem-log tool (qcat / shannon / elt).
-- `_M` — class — internal — Shared Pydantic base configured `populate_by_name=True, extra="forbid"`.
 <!-- END:STRUCTURE -->
 
 **Depends on**
-TODO — link peer MODULE.md files.
-- `src/ucap/adapters/MODULE.md` (the package consumes adapter outputs via the CLI dispatcher in `cli.py`).
-- Future `src/ucap/diagnostics/MODULE.md` once drafted (Pillar C).
+- `src/ucap/schema/MODULE.md` — `cli.py` uses `Vendor` and `Release` literal types as argparse `choices`.
+- `src/ucap/adapters/MODULE.md` — `cli.py`'s `_parse_log` calls into each adapter's public surface (`parse_qcat_file`, `map_message_to_canonical`, `parse_shannon_log`, `parse_elt_log`); signature changes there force changes here.
+- `src/ucap/diagnostics/MODULE.md` — `cli.py` uses `ReportWriter`, `ReportRecord`, `ReportType`, `Redactor`, `format_code`, `get_code` for `--diagnostic` / `--validate` / `--redact-with` modes and for `CLI-E???` error emission.
 
 **Depended on by**
-TODO — top-level package; depended on by `tests/` and (externally) any consumer of the canonical JSON output.
+*(external)* — anyone running the `ucap` console script. No in-repo Python module imports from `ucap.cli` or `ucap.__version__` except `ucap.adapters.qcat` (which imports `__version__` as `_PARSER_VERSION` for `Meta.parserVersion`); that single edge is a leaf-level reference, not a contract dependency.

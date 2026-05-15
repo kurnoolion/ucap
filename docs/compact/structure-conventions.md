@@ -8,7 +8,7 @@ Populated 2026-05-14 by `project-init --retrofit` from Topic 2 of the interview.
 
 Each directory containing `__init__.py` under the top-level package directory (`src/ucap/`) is a module. A module's MODULE.md lives at the directory root — i.e. `src/ucap/MODULE.md` for the top-level package, and `src/ucap/<submodule>/MODULE.md` for each submodule (e.g. `src/ucap/adapters/MODULE.md`).
 
-Sub-modules deeper than one level (e.g. `src/ucap/adapters/qcat/` if it ever becomes a package) follow the same rule. Single-file submodules (e.g. `src/ucap/cli.py`, `src/ucap/schema.py`) are part of their parent module — their public surface rolls up into the parent's MODULE.md, not a separate one.
+Sub-modules deeper than one level (e.g. `src/ucap/adapters/qcat/` if it ever becomes a package) follow the same rule. Single-file submodules (e.g. `src/ucap/cli.py`) are part of their parent module — their public surface rolls up into the parent's MODULE.md, not a separate one. **Note (2026-05-14, `[D-014]`)**: `src/ucap/schema.py` was promoted to a sub-package `src/ucap/schema/` with its own `MODULE.md` during architecture-phase MODULE.md curation, to resolve the package-level `ucap ↔ adapters` cycle.
 
 ## Visibility mapping
 
@@ -44,4 +44,4 @@ Each MODULE.md carries the following curated sections (plus a regen-only Structu
 
 MODULE.md files seeded by `project-init --retrofit` begin with the marker `<!-- retrofit: skeleton -->`. While present, `close-session` treats curated-section edits as expected (not hard flags). Remove the sentinel once the MODULE.md is fully curated; from that point, normal audit rules apply.
 
-Files currently bearing the sentinel: `src/ucap/MODULE.md`, `src/ucap/adapters/MODULE.md`.
+Files currently bearing the sentinel: *(none — both `src/ucap/MODULE.md` and `src/ucap/adapters/MODULE.md` were curated 2026-05-14; `src/ucap/schema/MODULE.md` and `src/ucap/diagnostics/MODULE.md` are fresh drafts and never bore the sentinel)*.

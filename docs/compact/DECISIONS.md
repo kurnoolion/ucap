@@ -517,3 +517,44 @@ ucap today has none of those triggers: no ingestor modules, no generated code, n
 - *Per-line length cap (e.g. 200 chars).* Rejected — would force splitting wide RPTs across lines, breaking the "one record one line" rule. The 30-line per-session cap is the right level to bound flooding.
 - *Allow uppercase / hyphens in field names (`combos-eutra` or `combosEUTRA`).* Rejected — inconsistent with Python conventions and hilda's pattern; adds case-folding worries to grep / parse.
 - *Move the "no prose" rule into a separate decision (`D-013-prose`) rather than a clause of `D-013`.* Rejected — it's the same emit-boundary enforcement mechanism (`QCTemplate.validate_record`) and naturally belongs alongside the grammar.
+
+---
+
+## D-014: Schema split into its own sub-package (`src/ucap/schema/`)
+
+**Status**: Active
+**Date**: 2026-05-14
+**Context**: Curating the retrofit MODULE.md skeletons for `src/ucap/` and `src/ucap/adapters/` surfaced a documentation cycle at the *package-granularity* dependency graph: `ucap → adapters` (because `cli.py`'s `_parse_log` calls into specific adapter functions) and `adapters → ucap` (because every adapter imports types from `ucap.schema`). At the *file-granularity* the chain is acyclic (`cli → adapters → schema`, and `schema` is a leaf), but the package-as-module view collapses `cli.py` and `schema.py` into a single `ucap` node — creating the cycle. The architecture-phase exit criterion requires either an acyclic dependency graph or a DECISIONS-entry justification for each cycle.
+
+**Decision**: Promote `src/ucap/schema.py` to a sub-package `src/ucap/schema/__init__.py` containing the existing schema code unchanged. Add a dedicated `src/ucap/schema/MODULE.md`. The split is mechanical: `mkdir src/ucap/schema && git mv src/ucap/schema.py src/ucap/schema/__init__.py`. No import-statement changes anywhere in the codebase — Python treats `from ucap.schema import X` identically whether `ucap.schema` is a module or package.
+
+After the split, the dependency graph at module-granularity is:
+
+- `src/ucap/schema/` — depends on nothing inside ucap (external: `pydantic>=2.6`). Leaf.
+- `src/ucap/diagnostics/` — depends on nothing inside ucap (stdlib only, per `[D-011]`). Leaf.
+- `src/ucap/adapters/` — depends on `src/ucap/schema/` (types) and `src/ucap/diagnostics/` (error codes, ReportWriter).
+- `src/ucap/` (top-level: `cli.py` + `__init__.py`) — depends on `src/ucap/schema/`, `src/ucap/adapters/`, `src/ucap/diagnostics/`.
+
+Acyclic.
+
+**Why**:
+- The reorg costs are negligible — zero behavior change, zero import-statement changes, zero pyproject changes, zero test changes, zero CI changes. The only edits are `git mv` + the new MODULE.md + the (1-line) note in `structure-conventions.md`.
+- It earns schema its own MODULE.md contract, consistent with `[D-011]`'s sub-package pattern for `diagnostics`. The canonical types are a load-bearing public-API layer; treating them as a peer module rather than a subfile of the CLI dispatcher makes the contract auditable.
+- It eliminates the cycle structurally rather than papering over it with a justified-cycle DECISIONS note. Justifying a cycle is documentation debt that propagates to MAP.md and to every future drift-check pass; this resolves the issue at the source.
+- `[D-008]` (the partition decision) deferred the *core / customizations / config* reorg because that move encodes a forward-looking judgment about future-artifact placement against an empty plan. This reorg is different: it's a *structural cleanup that surfaces during architecture-phase curation*, with concrete current value (cycle resolution + contract slot). The do-it-cheap-now argument applies cleanly.
+
+**Consequences**:
+- **`src/ucap/schema/MODULE.md` is a new contract**, drafted 2026-05-14 alongside this entry. Its Public surface is the type aliases + Pydantic models that were previously documented as "rolled up into `src/ucap/MODULE.md`". Key choices cite `[D-002]`, `[D-005]`, `[D-007]`, and this `[D-014]`.
+- **`src/ucap/MODULE.md`'s Public surface contracts**: now just `__version__` and `main()`. The Pydantic models and type aliases no longer appear there.
+- **`docs/compact/structure-conventions.md`'s "Single-file submodules" note updated** — `schema.py` removed from the example list, with a 2026-05-14 note pointing at this entry. `cli.py` remains the only single-file submodule of the top-level `ucap` package.
+- **`docs/compact/retrofit-snapshot.md` becomes slightly outdated** in its "Candidate modules" listing (which still says 2 modules under Python). The snapshot is archival per `project-init --retrofit` rules; the correction lives here, not in a snapshot edit.
+- **`pyproject.toml`'s hatch wheel target is unchanged** — `packages = ["src/ucap"]` already recursively covers any sub-package, including the new `schema/`.
+- **MAP.md regenerated** after the split — module count goes from 2 to 4 (`ucap`, `ucap.adapters`, `ucap.diagnostics`, `ucap.schema`); Mermaid graph becomes acyclic.
+- **No Python code in `__init__.py` was modified** during the move. Test fixtures, adapter mappers, CLI dispatcher all still import `from ucap.schema import ...` and resolve identically.
+- **Per `[D-008]`**: `schema/` lives in the platform tier. If a future per-operator extension to the canonical schema is ever needed (unlikely — schema is the cross-operator interoperability layer), it would NOT go in `customizations/<id>/schema/` — it would go through schema evolution (new `_unmapped` extraction → typed field via Pydantic schema versioning), keeping the platform schema as the single canonical type.
+
+**Alternatives considered**:
+- *Log a justified-cycle DECISIONS entry and leave schema as a single file.* Rejected — the cycle is real (file-level edges chain `cli → adapters → schema` with schema bundled in ucap), and a justification-without-resolution is documentation debt that survives every subsequent drift-check. The split costs nothing and is a clean architectural improvement.
+- *Split `cli.py` into its own sub-package too (`src/ucap/cli/__init__.py`).* Rejected — `cli.py` is a single-file dispatcher; making it a sub-package adds zero contract value. Schema is the type-API surface — that's what earns the dedicated MODULE.md.
+- *Move schema higher in the tree (e.g. `src/schema/` as a sibling of `src/ucap/`).* Rejected — the canonical schema is part of ucap's identity (`from ucap.schema import CanonicalUeCapability` is the natural import); sibling placement would dilute the package boundary and break the "ucap is one Python package" mental model.
+- *Wait until development phase to do the reorg.* Rejected — the architecture-phase task is MODULE.md curation; resolving the cycle as part of that curation is the natural place to do it. Deferring would leave the cycle in MAP.md for the duration of architecture phase and bleed into development.

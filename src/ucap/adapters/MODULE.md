@@ -1,38 +1,66 @@
-<!-- retrofit: skeleton -->
 # adapters
 
 **Purpose**
-TODO — retrofit skeleton; please fill in. Per-vendor parsers that take a vendor-tool text export and emit a list of `CanonicalUeCapability` records (one per UE Capability Information message in the log). One adapter per vendor: QCAT (Qualcomm, v1 shipped), Shannon DM (Samsung LSI, stub), ELT (MediaTek, stub).
+Per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input. v1 ships the QCAT adapter (Qualcomm); Shannon DM and ELT adapters are stubs awaiting sample logs. Serves `FR-1` (parse-to-canonical pipeline), `FR-2`–`FR-5` (EUTRA / NR / MRDC mapping), `FR-9` (BIT STRING dual-style parsing), `FR-8` (stub-adapter NotImplementedError messages).
 
 **Public surface**
-<!-- Candidates observed in code (curate; don't copy verbatim): -->
-<!-- From src/ucap/adapters/qcat.py (__all__ is authoritative): -->
-<!-- - class TreeNode  # indent-driven parse tree node -->
-<!-- - class Message  # parsed QCAT message (title + tree root) -->
-<!-- - def parse_qcat_file(path: str | Path) -> list[Message] -->
-<!-- - def parse_qcat_text(text: str) -> Iterator[Message] -->
-<!-- - def map_message_to_canonical(...) -> CanonicalUeCapability -->
-<!-- From src/ucap/adapters/shannon.py: -->
-<!-- - def parse_shannon_log(path: str | Path, *, release: str) -> list[CanonicalUeCapability]  # STUB — raises NotImplementedError -->
-<!-- From src/ucap/adapters/elt.py: -->
-<!-- - def parse_elt_log(path: str | Path, *, release: str) -> list[CanonicalUeCapability]  # STUB — raises NotImplementedError -->
-TODO
+
+`src/ucap/adapters/qcat.py` (file declares `__all__`; that list is authoritative):
+
+```python
+class TreeNode               # node in the indent-driven parse tree (name, value, children, line_no)
+class Message                # parsed QCAT message: title, direction, timestamp, line range, root TreeNode
+
+def parse_qcat_file(path: str | Path) -> list[Message]
+def parse_qcat_text(text: str) -> Iterator[Message]
+def map_message_to_canonical(
+    msg: Message, *, vendor: Vendor, release: Release, source_file: str,
+) -> CanonicalUeCapability
+```
+
+`src/ucap/adapters/shannon.py`:
+
+```python
+def parse_shannon_log(path: str | Path, *, release: str) -> list[CanonicalUeCapability]
+# v1: stub. Raises NotImplementedError with a message naming the sample-log artifact needed
+# (Shannon DM right-click "Copy Details" path: LTE RRC → ULDCCH → ueCapabilityInformation).
+# Under --diagnostic mode, emits a FAIL report (error_code=SHN-E001) instead per [D-010] B6.
+```
+
+`src/ucap/adapters/elt.py`:
+
+```python
+def parse_elt_log(path: str | Path, *, release: str) -> list[CanonicalUeCapability]
+# v1: stub. Raises NotImplementedError with a message naming the sample-log artifact needed
+# (ELT native log view or Wireshark-routed export).
+# Under --diagnostic mode, emits a FAIL report (error_code=ELT-E001) instead per [D-010] B6.
+```
+
+Internal helpers (the 35+ leading-underscore functions and classes in `qcat.py` — `_parse_message`, `_build_tree`, `_map_eutra`, `_collect_nr_per_cc_tables`, etc.) are not part of the contract. Implementation can refactor freely without touching this MODULE.md.
 
 **Invariants**
-TODO — likely candidates worth committing to:
-- Every adapter returns `list[CanonicalUeCapability]` — one record per UE Capability Information message in the input log; empty list if none found.
-- Adapters never write to disk and never raise unprefixed `Exception` — failures emit a prefixed error code per Pillar A (`QCT-…`, `SHN-…`, `ELT-…`).
-- Adapters never include raw log content in any diagnostic / report output (Pillars A + E).
+
+- **Every adapter returns `list[CanonicalUeCapability]`** — one record per `UE Capability Information` message in the input; empty list if none found. No `None`, no single-record return.
+- **Adapters consume schema types; never mutate them.** Pydantic models are constructed via `Model(...)`; field assignments after construction are not used.
+- **Pydantic `ValidationError` at the canonical-output boundary** is caught and wrapped in `QCT-E002` / `SHN-E002` / `ELT-E002` (via `[D-011]`'s `{validation_failure}` enum bucketing — `unknown_field` / `missing_required` / `type_mismatch` / `value_out_of_range`). Free-text validation error messages never propagate out of the adapter.
+- **Adapters emit prefixed error codes via `ucap.diagnostics`** for any cross-boundary failure path: `QCT-E001` (parse fail), `QCT-E002` (canonical validation fail), `QCT-W001` (unmapped top-level field). Shannon and ELT have analogous codes (`SHN-E001`, `ELT-E001`); their stubs already cover the "not implemented" case.
+- **No raw log content in diagnostic / report output.** Adapter contributions to RPT / MET / QC records are counts, timings, bounded-enum tokens, and registered error codes only — never line excerpts, never file paths, never device identifiers. Anchors `NFR-4`. Defense-in-depth via `Redactor` in `[D-012]`.
+- **Trailing `Message dump (Hex)` blocks are stripped** before tree-building so they don't pollute the parsed structure (QCAT-specific quirk; QCT adapter only).
+- **Stub adapters under `--diagnostic` mode emit `FAIL` reports** (`[D-010]` B6) rather than raising `NotImplementedError` — preserves the chat-mediated debugging contract across the vendor matrix.
 
 **Key choices**
-TODO — link to DECISIONS entries once architecture phase formalizes them. Candidates: indent-driven tree parser vs ASN.1-aware grammar (chose indent — simpler, robust to non-canonical QCAT output); per-vendor file rather than a plugin loader; hand-rolled SEQUENCE-OF type-marker collapse heuristic.
+
+- `[D-003]` — per-vendor file pattern: one `.py` per vendor under `src/ucap/adapters/`, sharing `CanonicalUeCapability` but no parsing infrastructure. CLI dispatches by `--vendor`.
+- `[D-004]` — indent-driven tree parser for QCAT, not a grammar-aware ASN.1 parser. Robust to QCAT's two indent styles, SEQUENCE-OF type-marker collapse, NR colon-spacing variant. Release-version handling is a mapper concern, not a grammar concern.
+- `[D-009]`–`[D-013]` — chat-mediated debugging surface (error codes, reports, diagnostics module, redaction, output discipline). Each adapter participates by emitting prefixed errors and contributing counts/timings to compact reports.
 
 **Non-goals**
-TODO — likely:
-- Not a hex-dump decoder — adapters strip trailing `Message dump (Hex)` blocks.
-- Not a real-time tap — batch tool over file input only.
-- Adapters do not implement the audit / diff / query subcommands (those will live in their own modules).
-- Shannon DM and ELT adapters are stubs in v1 — implementations await sample logs.
+
+- **Not a hex-dump decoder.** Adapters strip the trailing hex dump from QCAT output and ignore similar trailers in other vendors; they parse the structured text portion only.
+- **Not a real-time tap.** ucap is a batch CLI over file inputs; adapters operate on complete log exports, not streaming tail-follows.
+- **Not the implementations for `audit` / `diff` / `query`.** Those will live in their own modules (`src/ucap/audit/`, etc.) and consume `CanonicalUeCapability` records produced here.
+- **Not a per-band detail parser.** `NrBand.scsSupported` ships empty (`FR-17` deferred); `mimo-ParametersPerBand` subtree is not parsed. v1 focus is band combinations, not per-band fine detail.
+- **Not vendor-format-version-aware beyond what QCAT exports require.** The mapper handles Rel-10 / Rel-11 / Rel-15 / Rel-16 / Rel-17 field-name variations as they appear in QCAT output; chasing every ASN.1 release on every adapter is out of scope.
 
 <!-- BEGIN:STRUCTURE -->
 _Regenerated 2026-05-14 by regen-map. Do not hand-edit._
@@ -57,7 +85,7 @@ _File declares `__all__`; that list is authoritative for `pub`. All other top-le
 - `_append_mrdc_combos` — function — internal — Append MRDC combos from a given source list to the section.
 - `_build_tree` — function — internal — Build the indent-driven tree from tokenized lines.
 - `_collapse_sequence_of_markers` — function — internal — Collapse SEQUENCE-OF type-marker rows so `[N]` items hang under the field name.
-- `_collect_nr_per_cc_tables` — function — internal — Gather NR per-CC tables (DL / UL / DL-per-CC / UL-per-CC) from anywhere in the tree.
+- `_collect_nr_per_cc_tables` — function — internal — Gather NR per-CC tables from anywhere in the tree.
 - `_derive_fr` — function — internal — Derive frequency range (FR1 / FR2) from an NR band number.
 - `_extract_combo_band_entries` — function — internal — Pull per-CC band entries out of a combo node.
 - `_find_first` — function — internal — Find the first descendant node with a given name.
@@ -96,9 +124,19 @@ _File declares `__all__`; that list is authoritative for `pub`. All other top-le
 <!-- END:STRUCTURE -->
 
 **Depends on**
-TODO — link peer MODULE.md files.
-- `src/ucap/MODULE.md` (consumes `CanonicalUeCapability` and the Literal type aliases from `schema.py`).
-- Future `src/ucap/diagnostics/MODULE.md` (Pillar C) — for `ErrorCode`, `ReportRecord`, `ReportWriter`, `QCTemplate`.
+- `src/ucap/schema/MODULE.md` — every adapter consumes `CanonicalUeCapability`, the section types (`EutraSection` / `NrSection` / `MrdcSection`), the combo types, and every Literal type alias for field values.
+- `src/ucap/diagnostics/MODULE.md` — each adapter calls `format_code(...)` to raise prefixed errors and (in the future, post-development-phase) emits `RPT` / `QC` records via `ReportWriter`.
+- Top-level `ucap` package (`src/ucap/__init__.py`) — `qcat.py` imports `__version__` as `_PARSER_VERSION` to populate `Meta.parserVersion`. Single-symbol leaf reference, not a contract dependency.
 
 **Depended on by**
-TODO — `src/ucap/cli.py` dispatches to the appropriate adapter based on `--vendor`. `tests/test_qcat.py` exercises the QCAT adapter directly.
+- `src/ucap/MODULE.md` — `cli.py`'s `_parse_log` dispatches by `--vendor` to `parse_qcat_file` / `parse_shannon_log` / `parse_elt_log` and (for QCAT) `map_message_to_canonical`.
+- `tests/test_qcat.py` — exercises `parse_qcat_file` + `map_message_to_canonical` against the 5 vendored fixtures.
+
+**Deferred**
+- `FR-15`: Merge LTE extension flags (256QAM-DL / 64QAM-UL / 1024QAM-DL) from `supportedBandCombination-v1090` / `-v10i0` / `-v1430` into combo records.
+- `FR-16`: Merge NR extension lists `-v1540` / `-v1590` (power-class extensions, additional BCS) into the canonical NR section.
+- `FR-17`: Populate `NrBand.scsSupported` from `mimo-ParametersPerBand`.
+- `FR-18`: Refine `supportsSUL` so it's emitted only on NR entries (omit on EUTRA bands; consider `bool | None`).
+- `FR-19`: Shannon DM and ELT adapter implementations.
+
+Each carries a revisit trigger in `docs/compact/requirements.md`'s Deferred section; `drift-check` reads these so the gaps surface as `[DEFERRED]` rather than drift.

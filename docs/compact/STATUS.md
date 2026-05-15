@@ -14,6 +14,8 @@
 - 2026-05-14 — `D-011` logged: Pillar C ratified — standalone diagnostics module at `src/ucap/diagnostics/` (sub-package; all v1 code in `__init__.py`; refines `D-009` A5). MODULE.md drafted with public surface (`ErrorCode`, `ReportRecord`, `ReportWriter`, `QCTemplate`, registries, accessors), leaf-node invariant (no ucap imports), 11 initial error codes including `QCT-E002`'s `{validation_failure}` bucketing rule, two pre-registered QC templates. Module marked `[DRAFT]` (no code yet — development-phase deliverable).
 - 2026-05-14 — `D-012` logged: Pillar D ratified — redaction mapping protocol. Flat JSON map at `.ucap/state/<map>.json` (gitignored, hand-maintained); 6 placeholder categories `<DEV|FW|OP|ID|PATH|SESS>{N}` with stable indices; longest-match-first substitution at `ReportWriter.emit()` over the serialized line (defense-in-depth, not primary defense); `Redactor` class lives inside diagnostics module; `--redact-with <path>` CLI flag; `DGN-E004` added to registry (now 12 codes). Diagnostics MODULE.md updated with `Redactor` + `REDACTION_CATEGORIES` in public surface.
 - 2026-05-14 — `D-013` logged: Pillar E ratified — formal line grammar, reserved characters (`|` and `\n` rejected at emit), 30-line per-session cap (target 15), lowercase snake_case field-name convention, timestamp format `YYYY-MM-DDTHH:MM:SSZ`. Emit-boundary order pinned: validate → to_line → redact → buffer. **All five chat-mediated debugging pillars (A–E) now ratified as `D-009`–`D-013`.**
+- 2026-05-14 — `D-014` logged + executed: schema split into its own sub-package (`src/ucap/schema/__init__.py`) to resolve the `ucap ↔ adapters` package-level cycle that surfaced during MODULE.md curation. Zero import-statement changes (Python treats `ucap.schema` identically whether file or package). New `src/ucap/schema/MODULE.md` drafted.
+- 2026-05-14 — Retrofit MODULE.md skeletons for `src/ucap/` and `src/ucap/adapters/` curated; `<!-- retrofit: skeleton -->` sentinels removed from both. All four module contracts (`ucap`, `ucap.adapters`, `ucap.schema`, `ucap.diagnostics`) now drafted with real Purpose / Public surface / Invariants / Key choices (D-XXX anchors) / Non-goals / Depends on / Depended on by.
 
 ## In progress
 
@@ -21,9 +23,9 @@
 
 ## Next
 
-- Fill MODULE.md skeletons module-by-module (remove `<!-- retrofit: skeleton -->` sentinel once each is curated). Two seeded: `src/ucap/MODULE.md`, `src/ucap/adapters/MODULE.md`.
+- ~~Fill MODULE.md skeletons module-by-module (remove `<!-- retrofit: skeleton -->` sentinel once each is curated). Two seeded: `src/ucap/MODULE.md`, `src/ucap/adapters/MODULE.md`.~~ ✓ Done 2026-05-14 (both curated; sentinels removed; new `src/ucap/schema/MODULE.md` added via `D-014`).
 - ~~Ratify the five limited-LLM-access pillars (A–E from `project-init-interview.md` Topic 5) as DECISIONS entries `D-009` through `D-013`.~~ ✓ Done 2026-05-14.
-- Draft `src/ucap/diagnostics/MODULE.md` (or `src/ucap/diagnostics.py` if single-file is the right scale for v1) — Pillar C.
+- ~~Draft `src/ucap/diagnostics/MODULE.md` (or `src/ucap/diagnostics.py` if single-file is the right scale for v1) — Pillar C.~~ ✓ Done 2026-05-14 as part of `D-011`.
 - Briefly visit `/switch-phase requirements` to populate `docs/compact/requirements.md` with v1 FR / NFR covering current QCAT behavior + the chat-mediated debugging pillars.
 - Run `/drift-check design` once enough MODULE.md skeletons are curated, to surface code capabilities lacking an owning FR / NFR.
 

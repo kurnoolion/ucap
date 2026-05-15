@@ -6,20 +6,27 @@ Generated 2026-05-14 by regen-map. Do not hand-edit.
 
 | Module | Purpose | Status |
 |---|---|---|
-| [ucap](../../src/ucap/MODULE.md) | TODO — retrofit skeleton; please fill in. | |
-| [ucap.adapters](../../src/ucap/adapters/MODULE.md) | TODO — retrofit skeleton; please fill in. | |
+| [ucap](../../src/ucap/MODULE.md) | The user-facing top-level package: hosts the `ucap` console-script CLI (subcommand-style dispatcher) and the package version. | |
+| [ucap.adapters](../../src/ucap/adapters/MODULE.md) | Per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input. | |
+| [ucap.diagnostics](../../src/ucap/diagnostics/MODULE.md) | Owns the chat-mediated debugging vocabulary for ucap: error-code registry, three compact report types (RPT / MET / QC), and the fixed-field QC template machinery. | [DRAFT] |
+| [ucap.schema](../../src/ucap/schema/MODULE.md) | Canonical schema for UE capability band combinations — Pydantic v2 models with `extra="forbid"` and the Literal type aliases (`Vendor`, `Release`, `RatName`, etc.) that every adapter and the CLI share. | |
 
 ## Dependency graph
 
 ```mermaid
 flowchart TD
+    m_adapters[adapters]
+    m_diagnostics[diagnostics]
+    m_schema[schema]
     m_ucap[ucap]
-    m_ucap_adapters[ucap.adapters]
-    m_ucap --> m_ucap_adapters
-    m_ucap_adapters --> m_ucap
+    m_adapters --> m_diagnostics
+    m_adapters --> m_schema
+    m_ucap --> m_adapters
+    m_ucap --> m_diagnostics
+    m_ucap --> m_schema
 ```
 
-> Note: Both modules currently declare each other under **Depends on** (the package consumes adapter outputs via `cli.py`; adapters consume `CanonicalUeCapability` and the Literal type aliases from `schema.py`). This is a known cycle pending architecture-phase clean-up — likely resolved by either (a) moving the shared schema into the future `diagnostics`/`schema` leaf module, or (b) declaring one direction as the "official" edge and the other as a fixture-time / dispatch-time call. Flagged for the architecture session; do not paper over.
+Graph is acyclic. `D-014`'s schema-into-sub-package split resolved the prior `ucap ↔ adapters` cycle.
 
 ## Project File Structure
 
@@ -48,17 +55,21 @@ ucap/
 │       └── structure-conventions.md
 ├── pyproject.toml
 ├── src/
-│   └── ucap/                                  # TODO — retrofit skeleton; please fill in.
+│   └── ucap/                                  # The user-facing top-level package: hosts the `ucap` console-script CLI (subcommand-style dispatcher) and the package version.
 │       ├── MODULE.md
 │       ├── __init__.py
-│       ├── adapters/                          # TODO — retrofit skeleton; please fill in.
+│       ├── adapters/                          # Per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input.
 │       │   ├── MODULE.md
 │       │   ├── __init__.py
 │       │   ├── elt.py                         # MediaTek ELT (Engineer Log Tool) adapter — stub.
 │       │   ├── qcat.py                        # QCAT log text parser and canonical mapper.
 │       │   └── shannon.py                     # Samsung Shannon DM (Exynos) log adapter — stub.
 │       ├── cli.py                             # Command-line entry point.
-│       └── schema.py                          # Canonical schema for UE capability band combinations.
+│       ├── diagnostics/                       # Owns the chat-mediated debugging vocabulary for ucap: error-code registry, three compact report types (RPT / MET / QC), and the fixed-field QC template machinery.
+│       │   └── MODULE.md
+│       └── schema/                            # Canonical schema for UE capability band combinations — Pydantic v2 models with `extra="forbid"` and the Literal type aliases (`Vendor`, `Release`, `RatName`, etc.) that every adapter and the CLI share.
+│           ├── MODULE.md
+│           └── __init__.py                    # Canonical schema for UE capability band combinations.
 └── tests/
     ├── __init__.py
     ├── fixtures/
