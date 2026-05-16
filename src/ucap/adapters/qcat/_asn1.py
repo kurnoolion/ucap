@@ -26,8 +26,24 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+
+from ucap import __version__ as _PARSER_VERSION
+from ucap.schema import (
+    CanonicalUeCapability,
+    EutraBand,
+    EutraCaCombination,
+    EutraComboBandEntry,
+    EutraSection,
+    Meta,
+    MrdcSection,
+    NrSection,
+    RatName,
+    Release,
+    Vendor,
+)
 
 
 # ─── Public dataclasses ─────────────────────────────────────────────
@@ -560,6 +576,281 @@ def decode_message_containers(msg: Asn1Message) -> tuple[dict, ...]:
     abort the message, or to attempt partial recovery (L3's policy choice).
     """
     return tuple(decode_rat_container(c) for c in msg.rat_containers)
+
+
+# ─── L3: pycrate-dict → CanonicalUeCapability (D-019) ───────────────
+
+
+def map_asn1_message_to_canonical(
+    msg: Asn1Message,
+    *,
+    vendor: Vendor,
+    release: Release,
+    source_file: str,
+) -> CanonicalUeCapability:
+    """Map an :class:`Asn1Message` (post-L1 outer parser) to a fully-populated
+    :class:`CanonicalUeCapability`.
+
+    Internally calls L2 (PER decode) for each RAT container, then dispatches
+    to per-RAT mappers (``_map_eutra_from_dict`` and friends). The output
+    shape mirrors the indented adapter's ``map_message_to_canonical`` —
+    callers see the same canonical JSON regardless of source format (per
+    ``NFR-9``).
+
+    v1 first pass implements **EUTRA only**. NR and MRDC paths raise
+    ``NotImplementedError`` and are tracked as follow-on work under task #17.
+    """
+    rats_present: list[RatName] = []
+    eutra: EutraSection | None = None
+    nr: NrSection | None = None
+    mrdc: MrdcSection | None = None
+
+    for container in msg.rat_containers:
+        decoded = decode_rat_container(container)  # raises _PerDecodeError
+        rat = container.rat_type
+        if rat == "eutra":
+            if eutra is None:
+                eutra = _map_eutra_from_dict(decoded)
+                rats_present.append("eutra")
+            else:
+                # Multiple eutra containers in one message — unusual; ignore.
+                # Could be a hard-flag in close-session, but not v1-blocking.
+                pass
+        elif rat == "nr":
+            raise NotImplementedError(
+                "L3 NR mapping not yet implemented (task #17 follow-on). "
+                "Decoded dict is available via decode_rat_container() for inspection."
+            )
+        elif rat in ("eutra-nr", "mrdc-XPDCP"):
+            raise NotImplementedError(
+                "L3 MRDC mapping not yet implemented (task #17 follow-on). "
+                "Decoded dict is available via decode_rat_container() for inspection."
+            )
+        else:
+            raise ValueError(f"Unsupported rat-Type {rat!r} in ASN.1 message")
+
+    meta = Meta(
+        vendor=vendor,
+        release=release,
+        sourceFile=source_file,
+        sourceLineRange=(msg.start_line, msg.end_line),
+        decodedAt=datetime.now(tz=timezone.utc),
+        parserVersion=_PARSER_VERSION,
+    )
+
+    return CanonicalUeCapability(
+        _meta=meta,
+        ratsPresent=rats_present,
+        eutra=eutra,
+        nr=nr,
+        mrdc=mrdc,
+    )
+
+
+# ─── L3: per-RAT mappers ────────────────────────────────────────────
+
+
+def _flatten_extensions(decoded: dict) -> dict:
+    """Walk the ``nonCriticalExtension`` chain and merge each layer's fields
+    into a flat dict.
+
+    3GPP RRC adds per-release fields under a chained ``nonCriticalExtension``
+    sub-SEQUENCE: ``UE-EUTRA-Capability → V920-IEs → V940-IEs → V1020-IEs →
+    …``. Each layer's fields are non-overlapping (3GPP assigns unique names
+    like ``rf-Parameters-v1020``, ``rf-Parameters-v1090``, etc.), so a flat
+    merge is unambiguous.
+
+    Returns a dict with all encountered fields keyed by their original names;
+    ``nonCriticalExtension`` and ``lateNonCriticalExtension`` are consumed
+    during the walk and not included in the result.
+    """
+    result: dict = {}
+    cur: dict | None = decoded
+    while cur is not None:
+        for k, v in cur.items():
+            if k in ("nonCriticalExtension", "lateNonCriticalExtension"):
+                continue
+            result[k] = v
+        nxt = cur.get("nonCriticalExtension")
+        if not isinstance(nxt, dict):
+            break
+        cur = nxt
+    return result
+
+
+def _map_eutra_from_dict(decoded: dict) -> EutraSection:
+    """Map a pycrate-decoded ``UE-EUTRA-Capability`` dict to an :class:`EutraSection`.
+
+    v1 first-pass coverage:
+
+    - ``accessStratumRelease`` from the base SEQUENCE.
+    - ``supportedBands`` from ``rf-Parameters.supportedBandListEUTRA`` (one
+      :class:`EutraBand` per entry; ``halfDuplex`` flag preserved when present).
+    - ``caCombinations`` from ``rf-Parameters-v1020.supportedBandCombination-r10``
+      under the flattened extension chain. Source tagged ``"main"``. One
+      :class:`EutraCaCombination` per entry; ``bands`` populated with one
+      :class:`EutraComboBandEntry` per ``bandList`` element.
+
+    **Deferred (FR-15..FR-18, anchored in qcat/MODULE.md Deferred)**:
+      - ``supportedBandCombinationAdd-r11`` merge
+      - BCS bitmaps from ``supportedBandCombinationExt-r10``
+      - Extension flag merges (256QAM-DL / 64QAM-UL / 1024QAM-DL) from
+        ``-v1090`` / ``-v10i0`` / ``-v1430``
+      - ``reducedR13`` combos
+
+    These leave the corresponding :class:`EutraCaCombination` fields at their
+    defaults (``None`` for optional bools / bcs; ``"main"`` for ``source``).
+    """
+    flat = _flatten_extensions(decoded)
+
+    # Base-section release.
+    access_stratum_release = flat.get("accessStratumRelease", "rel8")
+
+    # supportedBands from rf-Parameters.supportedBandListEUTRA.
+    rf_params = flat.get("rf-Parameters", {})
+    supported_band_list = rf_params.get("supportedBandListEUTRA", []) or []
+    supported_bands: list[EutraBand] = []
+    for entry in supported_band_list:
+        if not isinstance(entry, dict):
+            continue
+        band_num = entry.get("bandEUTRA")
+        if band_num is None:
+            continue
+        supported_bands.append(
+            EutraBand(
+                band=int(band_num),
+                halfDuplex=bool(entry.get("halfDuplex", False)),
+            )
+        )
+
+    # Main combo list lives in the v1020 extension layer.
+    rf_params_v1020 = flat.get("rf-Parameters-v1020")
+    main_combos_raw: list = []
+    if isinstance(rf_params_v1020, dict):
+        main_combos_raw = (
+            rf_params_v1020.get("supportedBandCombination-r10") or []
+        )
+
+    ca_combinations: list[EutraCaCombination] = []
+    for idx, combo_entry in enumerate(main_combos_raw):
+        ca_combinations.append(_map_eutra_combo_r10(idx, combo_entry))
+
+    return EutraSection(
+        accessStratumRelease=str(access_stratum_release),
+        supportedBands=supported_bands,
+        caCombinations=ca_combinations,
+    )
+
+
+def _map_eutra_combo_r10(idx: int, combo_entry: list | dict) -> EutraCaCombination:
+    """Map one entry of ``supportedBandCombination-r10`` to :class:`EutraCaCombination`.
+
+    The Rel-10 grammar is ``SupportedBandCombination-r10 ::= SEQUENCE (SIZE
+    (..)) OF BandCombinationParameters-r10``; pycrate decodes each combo as a
+    list of band-parameter dicts. Older spec variants (Rel-11 wrapped each
+    combo in ``bandParameterList-r11``); pycrate's Rel-17 schema produces the
+    Rel-10 inline shape regardless of input release.
+    """
+    # combo_entry is a list of band-parameter dicts.
+    band_list = combo_entry if isinstance(combo_entry, list) else []
+
+    band_entries: list[EutraComboBandEntry] = []
+    for bp in band_list:
+        if not isinstance(bp, dict):
+            continue
+        band_entries.append(_map_eutra_band_params_r10(bp))
+
+    label = _format_eutra_combo_label(band_entries)
+
+    return EutraCaCombination(
+        combinationId=idx,
+        label=label,
+        bands=band_entries,
+        bcs=None,
+        supports256QAMDL=None,
+        supports64QAMUL=None,
+        supports1024QAMDL=None,
+        source="main",
+    )
+
+
+def _map_eutra_band_params_r10(bp: dict) -> EutraComboBandEntry:
+    """Map one ``BandParameters-r10`` dict to :class:`EutraComboBandEntry`."""
+    band_eutra = bp.get("bandEUTRA-r10")
+    band = int(band_eutra) if band_eutra is not None else 0
+
+    # DL: bandParametersDL-r10 SEQUENCE OF { ca-BandwidthClassDL-r10, supportedMIMO-CapabilityDL-r10 OPT }
+    # In TS 36.331 there's typically zero or one BW class per direction; pycrate
+    # produces a list. We take the first entry's class as the canonical value.
+    dl_class = None
+    dl_layers = None
+    dl_list = bp.get("bandParametersDL-r10") or []
+    if dl_list and isinstance(dl_list[0], dict):
+        dl0 = dl_list[0]
+        dl_class_raw = dl0.get("ca-BandwidthClassDL-r10")
+        if dl_class_raw is not None:
+            dl_class = _normalize_ca_bw_class(dl_class_raw)
+        dl_layers_raw = dl0.get("supportedMIMO-CapabilityDL-r10")
+        if dl_layers_raw is not None:
+            dl_layers = _normalize_mimo_capability(dl_layers_raw)
+
+    ul_class = None
+    ul_layers = None
+    ul_list = bp.get("bandParametersUL-r10") or []
+    if ul_list and isinstance(ul_list[0], dict):
+        ul0 = ul_list[0]
+        ul_class_raw = ul0.get("ca-BandwidthClassUL-r10")
+        if ul_class_raw is not None:
+            ul_class = _normalize_ca_bw_class(ul_class_raw)
+        ul_layers_raw = ul0.get("supportedMIMO-CapabilityUL-r10")
+        if ul_layers_raw is not None:
+            ul_layers = _normalize_mimo_capability(ul_layers_raw)
+
+    return EutraComboBandEntry(
+        band=band,
+        caBandwidthClassDL=dl_class,
+        caBandwidthClassUL=ul_class,
+        maxLayersDL=dl_layers,
+        maxLayersUL=ul_layers,
+    )
+
+
+def _normalize_ca_bw_class(raw: str | None) -> str | None:
+    """ASN.1 ENUMERATED for CA-BandwidthClass uses lowercase tokens (``a``,
+    ``b``, ...); canonical schema uses uppercase (``A``, ``B``, ...).
+    """
+    if raw is None:
+        return None
+    return str(raw).upper() if len(str(raw)) == 1 else None
+
+
+def _normalize_mimo_capability(raw: str | None) -> int | None:
+    """Map MIMO-CapabilityDL-r10 enum tokens (``twoLayers``, ``fourLayers``,
+    ``eightLayers``) to integer layer counts.
+    """
+    if raw is None:
+        return None
+    mapping = {
+        "twoLayers": 2,
+        "fourLayers": 4,
+        "eightLayers": 8,
+        "sixteenLayers": 16,
+    }
+    return mapping.get(str(raw))
+
+
+def _format_eutra_combo_label(entries: list[EutraComboBandEntry]) -> str:
+    """Build the canonical combo label: ``<band><BWClass>`` joined by ``-``.
+
+    Mirrors the indented adapter's helper (per qcat/MODULE.md Key choices →
+    label-formatting logic shared between formats). NR bands are not relevant
+    here (EUTRA-only adapter).
+    """
+    parts: list[str] = []
+    for e in entries:
+        bw = e.caBandwidthClassDL or e.caBandwidthClassUL or ""
+        parts.append(f"{e.band}{bw}")
+    return "-".join(parts)
 
 
 # ─── Utility: brace matching ────────────────────────────────────────

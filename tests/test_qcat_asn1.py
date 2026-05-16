@@ -521,3 +521,283 @@ def test_per_decode_error_attributes() -> None:
     assert err.failure_reason == "per_decode_failed"
     assert err.original is inner
     assert "rat-Type='nr'" in str(err)
+
+
+# ─── L3: dict → CanonicalUeCapability — EUTRA first slice ──────────
+
+
+def test_flatten_extensions_one_layer() -> None:
+    """A flat dict with no nonCriticalExtension comes back unchanged (sans the key)."""
+    from ucap.adapters.qcat._asn1 import _flatten_extensions
+
+    d = {"a": 1, "b": {"c": 2}}
+    assert _flatten_extensions(d) == {"a": 1, "b": {"c": 2}}
+
+
+def test_flatten_extensions_chain() -> None:
+    """Each nonCriticalExtension layer's fields land at the top of the flat view."""
+    from ucap.adapters.qcat._asn1 import _flatten_extensions
+
+    d = {
+        "accessStratumRelease": "rel8",
+        "ue-Category": 4,
+        "nonCriticalExtension": {
+            "rf-Parameters-v920": {"foo": 1},
+            "nonCriticalExtension": {
+                "rf-Parameters-v1020": {"supportedBandCombination-r10": []},
+                "lateNonCriticalExtension": b"some-bytes",
+                "nonCriticalExtension": {
+                    "rf-Parameters-v1430": {"bar": 2},
+                },
+            },
+        },
+    }
+    flat = _flatten_extensions(d)
+    assert flat["accessStratumRelease"] == "rel8"
+    assert flat["ue-Category"] == 4
+    assert flat["rf-Parameters-v920"] == {"foo": 1}
+    assert flat["rf-Parameters-v1020"] == {"supportedBandCombination-r10": []}
+    assert flat["rf-Parameters-v1430"] == {"bar": 2}
+    # nonCriticalExtension and lateNonCriticalExtension are consumed.
+    assert "nonCriticalExtension" not in flat
+    assert "lateNonCriticalExtension" not in flat
+
+
+def test_map_eutra_synthetic_minimal() -> None:
+    """A minimal UE-EUTRA-Capability dict produces an EutraSection with one band, no combos."""
+    from ucap.adapters.qcat._asn1 import _map_eutra_from_dict
+
+    decoded = {
+        "accessStratumRelease": "rel8",
+        "ue-Category": 4,
+        "rf-Parameters": {
+            "supportedBandListEUTRA": [
+                {"bandEUTRA": 1, "halfDuplex": False},
+                {"bandEUTRA": 3, "halfDuplex": True},
+            ],
+        },
+    }
+    section = _map_eutra_from_dict(decoded)
+    assert section.accessStratumRelease == "rel8"
+    assert len(section.supportedBands) == 2
+    assert section.supportedBands[0].band == 1
+    assert section.supportedBands[0].halfDuplex is False
+    assert section.supportedBands[1].band == 3
+    assert section.supportedBands[1].halfDuplex is True
+    assert section.caCombinations == []
+
+
+def test_map_eutra_with_main_combo() -> None:
+    """A UE-EUTRA-Capability with one supportedBandCombination-r10 entry produces
+    one EutraCaCombination with the right band entries and label.
+    """
+    from ucap.adapters.qcat._asn1 import _map_eutra_from_dict
+
+    decoded = {
+        "accessStratumRelease": "rel10",
+        "ue-Category": 4,
+        "rf-Parameters": {
+            "supportedBandListEUTRA": [
+                {"bandEUTRA": 1, "halfDuplex": False},
+                {"bandEUTRA": 3, "halfDuplex": False},
+            ],
+        },
+        "nonCriticalExtension": {
+            "nonCriticalExtension": {
+                "rf-Parameters-v1020": {
+                    "supportedBandCombination-r10": [
+                        # One combo: band 1 + band 3 (both class A, DL)
+                        [
+                            {
+                                "bandEUTRA-r10": 1,
+                                "bandParametersDL-r10": [
+                                    {
+                                        "ca-BandwidthClassDL-r10": "a",
+                                        "supportedMIMO-CapabilityDL-r10": "twoLayers",
+                                    }
+                                ],
+                                "bandParametersUL-r10": [
+                                    {"ca-BandwidthClassUL-r10": "a"}
+                                ],
+                            },
+                            {
+                                "bandEUTRA-r10": 3,
+                                "bandParametersDL-r10": [
+                                    {
+                                        "ca-BandwidthClassDL-r10": "a",
+                                        "supportedMIMO-CapabilityDL-r10": "twoLayers",
+                                    }
+                                ],
+                            },
+                        ],
+                    ]
+                },
+            },
+        },
+    }
+    section = _map_eutra_from_dict(decoded)
+    assert section.accessStratumRelease == "rel10"
+    assert len(section.caCombinations) == 1
+    combo = section.caCombinations[0]
+    assert combo.combinationId == 0
+    assert combo.label == "1A-3A"
+    assert combo.source == "main"
+    assert combo.bcs is None
+    assert combo.supports256QAMDL is None
+    assert len(combo.bands) == 2
+    assert combo.bands[0].band == 1
+    assert combo.bands[0].caBandwidthClassDL == "A"
+    assert combo.bands[0].caBandwidthClassUL == "A"
+    assert combo.bands[0].maxLayersDL == 2
+    assert combo.bands[1].band == 3
+    assert combo.bands[1].caBandwidthClassDL == "A"
+    assert combo.bands[1].caBandwidthClassUL is None  # no UL band-parameters
+    assert combo.bands[1].maxLayersDL == 2
+
+
+def test_map_eutra_multiple_combos_indexed() -> None:
+    """Multiple combos get sequential combinationId values starting at 0."""
+    from ucap.adapters.qcat._asn1 import _map_eutra_from_dict
+
+    decoded = {
+        "accessStratumRelease": "rel10",
+        "nonCriticalExtension": {
+            "nonCriticalExtension": {
+                "rf-Parameters-v1020": {
+                    "supportedBandCombination-r10": [
+                        [{"bandEUTRA-r10": 1, "bandParametersDL-r10": [{"ca-BandwidthClassDL-r10": "a"}]}],
+                        [{"bandEUTRA-r10": 3, "bandParametersDL-r10": [{"ca-BandwidthClassDL-r10": "b"}]}],
+                        [{"bandEUTRA-r10": 7, "bandParametersDL-r10": [{"ca-BandwidthClassDL-r10": "c"}]}],
+                    ]
+                },
+            },
+        },
+    }
+    section = _map_eutra_from_dict(decoded)
+    assert len(section.caCombinations) == 3
+    assert [c.combinationId for c in section.caCombinations] == [0, 1, 2]
+    assert [c.label for c in section.caCombinations] == ["1A", "3B", "7C"]
+
+
+def test_map_asn1_message_to_canonical_eutra(monkeypatch) -> None:
+    """End-to-end: an Asn1Message routes through L2 (mocked) + L3 EUTRA mapper
+    and produces a CanonicalUeCapability with the right shape.
+
+    Mocks ``decode_rat_container`` to return a synthetic UE-EUTRA-Capability
+    dict, bypassing pycrate's encoder-side mandatory-fields complexity. The
+    L3 logic (``_map_eutra_from_dict``) is independently covered by the
+    synthetic-dict unit tests above. The full pycrate round-trip will exercise
+    here once a paired ASN.1 fixture lands (D-017).
+    """
+    from ucap.adapters.qcat import _asn1
+    from ucap.adapters.qcat._asn1 import (
+        Asn1Message,
+        Asn1RatContainer,
+        map_asn1_message_to_canonical,
+    )
+
+    synthetic_decoded = {
+        "accessStratumRelease": "rel10",
+        "ue-Category": 4,
+        "rf-Parameters": {
+            "supportedBandListEUTRA": [
+                {"bandEUTRA": 1, "halfDuplex": False},
+                {"bandEUTRA": 3, "halfDuplex": False},
+            ],
+        },
+        "nonCriticalExtension": {
+            "nonCriticalExtension": {
+                "rf-Parameters-v1020": {
+                    "supportedBandCombination-r10": [
+                        [
+                            {
+                                "bandEUTRA-r10": 1,
+                                "bandParametersDL-r10": [
+                                    {"ca-BandwidthClassDL-r10": "a"}
+                                ],
+                            },
+                            {
+                                "bandEUTRA-r10": 3,
+                                "bandParametersDL-r10": [
+                                    {"ca-BandwidthClassDL-r10": "a"}
+                                ],
+                            },
+                        ]
+                    ]
+                }
+            }
+        },
+    }
+
+    monkeypatch.setattr(_asn1, "decode_rat_container", lambda _c: synthetic_decoded)
+
+    msg = Asn1Message(
+        rrc_transaction_id=2,
+        rat_containers=(Asn1RatContainer(rat_type="eutra", encoded=b"\x00" * 4),),
+        start_line=10,
+        end_line=20,
+    )
+    canonical = map_asn1_message_to_canonical(
+        msg, vendor="qcat", release="rel17", source_file="test.txt"
+    )
+
+    assert canonical.ratsPresent == ["eutra"]
+    assert canonical.nr is None
+    assert canonical.mrdc is None
+    assert canonical.eutra is not None
+    assert canonical.eutra.accessStratumRelease == "rel10"
+    assert len(canonical.eutra.supportedBands) == 2
+    assert canonical.eutra.supportedBands[0].band == 1
+    assert canonical.eutra.supportedBands[1].band == 3
+    assert len(canonical.eutra.caCombinations) == 1
+    assert canonical.eutra.caCombinations[0].label == "1A-3A"
+
+    # Meta provenance preserved.
+    assert canonical.meta.vendor == "qcat"
+    assert canonical.meta.release == "rel17"
+    assert canonical.meta.sourceFile == "test.txt"
+    assert canonical.meta.sourceLineRange == (10, 20)
+
+
+def test_map_asn1_message_nr_not_implemented(monkeypatch) -> None:
+    """NR mapping is task-#17-follow-on; raises NotImplementedError for now."""
+    from ucap.adapters.qcat import _asn1
+    from ucap.adapters.qcat._asn1 import (
+        Asn1Message,
+        Asn1RatContainer,
+        map_asn1_message_to_canonical,
+    )
+
+    monkeypatch.setattr(_asn1, "decode_rat_container", lambda _c: {})
+    msg = Asn1Message(
+        rrc_transaction_id=0,
+        rat_containers=(Asn1RatContainer(rat_type="nr", encoded=b"\x00"),),
+        start_line=1,
+        end_line=5,
+    )
+    with pytest.raises(NotImplementedError, match="L3 NR mapping"):
+        map_asn1_message_to_canonical(
+            msg, vendor="qcat", release="rel17", source_file="test.txt"
+        )
+
+
+def test_map_asn1_message_mrdc_not_implemented(monkeypatch) -> None:
+    """eutra-nr (MRDC) mapping is task-#17-follow-on; raises NotImplementedError."""
+    from ucap.adapters.qcat import _asn1
+    from ucap.adapters.qcat._asn1 import (
+        Asn1Message,
+        Asn1RatContainer,
+        map_asn1_message_to_canonical,
+    )
+
+    monkeypatch.setattr(_asn1, "decode_rat_container", lambda _c: {})
+    msg = Asn1Message(
+        rrc_transaction_id=0,
+        rat_containers=(Asn1RatContainer(rat_type="eutra-nr", encoded=b"\x00"),),
+        start_line=1,
+        end_line=5,
+    )
+    with pytest.raises(NotImplementedError, match="L3 MRDC mapping"):
+        map_asn1_message_to_canonical(
+            msg, vendor="qcat", release="rel17", source_file="test.txt"
+        )
