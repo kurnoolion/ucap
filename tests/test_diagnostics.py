@@ -104,11 +104,12 @@ def test_error_codes_severity_matches_letter() -> None:
 
 
 def test_error_codes_v1_count() -> None:
-    """v1 ERROR_CODES has exactly the 12 codes locked in D-011 + D-012."""
+    """v1 ERROR_CODES has exactly the 14 codes locked in D-011 + D-012 + D-019."""
     from ucap.diagnostics import ERROR_CODES
 
-    assert len(ERROR_CODES) == 12, (
-        f"Expected 12 codes (D-011's initial 11 + DGN-E004 from D-012); got {len(ERROR_CODES)}"
+    assert len(ERROR_CODES) == 14, (
+        f"Expected 14 codes (D-011's initial 11 + DGN-E004 from D-012 + "
+        f"QCT-E003 + QCT-E004 from D-019); got {len(ERROR_CODES)}"
     )
 
 

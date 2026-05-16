@@ -88,7 +88,13 @@ ERROR_CODES: dict[str, ErrorCode] = {
         "Module '{module}' has no QCTemplate registered",
         ErrorSeverity.WARNING,
     ),
-    # QCAT adapter
+    # QCAT adapter.
+    #
+    # QCT-E002's {validation_failure} placeholder is a bounded-enum token from:
+    #   unknown_field | missing_required | type_mismatch | value_out_of_range | per_decode_failed
+    # (per D-011 + D-019). Callers map Pydantic ValidationError / pycrate decode
+    # failures to one of these tokens before format_code(); free-text validation
+    # messages never reach a compact report.
     "QCT-E001": ErrorCode(
         "QCT-E001",
         "Failed to parse QCAT message at line {line}",
@@ -97,6 +103,16 @@ ERROR_CODES: dict[str, ErrorCode] = {
     "QCT-E002": ErrorCode(
         "QCT-E002",
         "Canonical-output validation failed for message at line {line}: {validation_failure}",
+        ErrorSeverity.ERROR,
+    ),
+    "QCT-E003": ErrorCode(
+        "QCT-E003",
+        "ASN.1 value-notation syntax error at line {line}: {detail}",
+        ErrorSeverity.ERROR,
+    ),
+    "QCT-E004": ErrorCode(
+        "QCT-E004",
+        "PER decode failure for inner OCTET STRING (rat_type={rat_type}) at message line {line}: {failure_reason}",
         ErrorSeverity.ERROR,
     ),
     "QCT-W001": ErrorCode(

@@ -12,6 +12,7 @@ license = "Apache-2.0"
 authors = [{ name = "ucap maintainers" }]
 dependencies = [
     "pydantic>=2.6",
+    "pycrate>=0.8.1",
 ]
 
 [project.optional-dependencies]
