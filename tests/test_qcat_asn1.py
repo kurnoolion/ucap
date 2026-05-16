@@ -305,3 +305,219 @@ message c1 : ueCapabilityInformation :
     msgs = list(parse_asn1_text(empty_hex))
     assert len(msgs) == 1
     assert msgs[0].rat_containers[0].encoded == b""
+
+
+# ─── L2: PER decoder via pycrate ────────────────────────────────────
+
+
+def test_get_pycrate_type_dispatch_nr() -> None:
+    """rat_type='nr' dispatches to RRCNR.UE_NR_Capability."""
+    from pycrate_asn1dir.RRCNR import NR_RRC_Definitions
+
+    from ucap.adapters.qcat._asn1 import _get_pycrate_type
+
+    assert _get_pycrate_type("nr") is NR_RRC_Definitions.UE_NR_Capability
+
+
+def test_get_pycrate_type_dispatch_eutra() -> None:
+    """rat_type='eutra' dispatches to RRCLTE.UE_EUTRA_Capability."""
+    from pycrate_asn1dir.RRCLTE import EUTRA_RRC_Definitions
+
+    from ucap.adapters.qcat._asn1 import _get_pycrate_type
+
+    assert _get_pycrate_type("eutra") is EUTRA_RRC_Definitions.UE_EUTRA_Capability
+
+
+def test_get_pycrate_type_dispatch_eutra_nr() -> None:
+    """rat_type='eutra-nr' dispatches to RRCNR.UE_MRDC_Capability."""
+    from pycrate_asn1dir.RRCNR import NR_RRC_Definitions
+
+    from ucap.adapters.qcat._asn1 import _get_pycrate_type
+
+    assert _get_pycrate_type("eutra-nr") is NR_RRC_Definitions.UE_MRDC_Capability
+
+
+def test_get_pycrate_type_dispatch_mrdc_xpdcp() -> None:
+    """rat_type='mrdc-XPDCP' also dispatches to UE_MRDC_Capability (Rel-15 variant)."""
+    from pycrate_asn1dir.RRCNR import NR_RRC_Definitions
+
+    from ucap.adapters.qcat._asn1 import _get_pycrate_type
+
+    assert _get_pycrate_type("mrdc-XPDCP") is NR_RRC_Definitions.UE_MRDC_Capability
+
+
+def test_get_pycrate_type_rejects_unknown() -> None:
+    """Unsupported rat-Type values raise ValueError."""
+    from ucap.adapters.qcat._asn1 import _get_pycrate_type
+
+    with pytest.raises(ValueError, match="Unsupported rat-Type"):
+        _get_pycrate_type("nbiot")
+    with pytest.raises(ValueError, match="Unsupported rat-Type"):
+        _get_pycrate_type("utra")
+
+
+def test_decode_rat_container_invalid_bytes_raises_per_decode_error() -> None:
+    """Random non-PER bytes raise _PerDecodeError with bucketed failure_reason."""
+    from ucap.adapters.qcat._asn1 import (
+        Asn1RatContainer,
+        _PerDecodeError,
+        decode_rat_container,
+    )
+
+    container = Asn1RatContainer(rat_type="nr", encoded=b"\xde\xad\xbe\xef" * 8)
+    with pytest.raises(_PerDecodeError) as exc_info:
+        decode_rat_container(container)
+    err = exc_info.value
+    assert err.rat_type == "nr"
+    assert err.failure_reason == "per_decode_failed"
+    assert err.original is not None
+
+
+def test_decode_rat_container_propagates_unsupported_rat_type() -> None:
+    """An Asn1RatContainer with an unsupported rat-Type raises ValueError
+    (not _PerDecodeError — dispatch failure happens before pycrate).
+    """
+    from ucap.adapters.qcat._asn1 import Asn1RatContainer, decode_rat_container
+
+    container = Asn1RatContainer(rat_type="utra", encoded=b"\x00")
+    with pytest.raises(ValueError, match="Unsupported rat-Type"):
+        decode_rat_container(container)
+
+
+def test_decode_rat_container_round_trip() -> None:
+    """A pycrate-encoded UE-NR-Capability round-trips through decode_rat_container.
+
+    Build a minimal-valid UE-NR-Capability value, encode it, wrap in
+    Asn1RatContainer, decode via the L2 path, and verify the dict shape.
+    """
+    from pycrate_asn1dir.RRCNR import NR_RRC_Definitions
+
+    from ucap.adapters.qcat._asn1 import Asn1RatContainer, decode_rat_container
+
+    # Build minimal-valid UE-NR-Capability per TS 38.331 mandatory fields.
+    minimal = {
+        "accessStratumRelease": "rel15",
+        "pdcp-Parameters": {
+            "supportedROHC-Profiles": {
+                "profile0x0000": False,
+                "profile0x0001": False,
+                "profile0x0002": False,
+                "profile0x0003": False,
+                "profile0x0004": False,
+                "profile0x0006": False,
+                "profile0x0101": False,
+                "profile0x0102": False,
+                "profile0x0103": False,
+                "profile0x0104": False,
+            },
+            "maxNumberROHC-ContextSessions": "cs2",
+        },
+        "phy-Parameters": {},
+        "rf-Parameters": {
+            "supportedBandListNR": [{"bandNR": 78}],
+        },
+    }
+    ue_nr = NR_RRC_Definitions.UE_NR_Capability
+    ue_nr.set_val(minimal)
+    encoded = ue_nr.to_uper()
+    assert isinstance(encoded, (bytes, bytearray))
+
+    container = Asn1RatContainer(rat_type="nr", encoded=bytes(encoded))
+    decoded = decode_rat_container(container)
+    assert isinstance(decoded, dict)
+    assert decoded.get("accessStratumRelease") == "rel15"
+    assert "rf-Parameters" in decoded
+    assert decoded["rf-Parameters"]["supportedBandListNR"][0]["bandNR"] == 78
+
+
+def test_decode_message_containers_decodes_all() -> None:
+    """decode_message_containers returns one dict per RAT in container order."""
+    from pycrate_asn1dir.RRCNR import NR_RRC_Definitions
+
+    from ucap.adapters.qcat._asn1 import (
+        Asn1Message,
+        Asn1RatContainer,
+        decode_message_containers,
+    )
+
+    # Encode the minimal NR cap (same construction as the round-trip test).
+    minimal = {
+        "accessStratumRelease": "rel15",
+        "pdcp-Parameters": {
+            "supportedROHC-Profiles": {
+                "profile0x0000": False,
+                "profile0x0001": False,
+                "profile0x0002": False,
+                "profile0x0003": False,
+                "profile0x0004": False,
+                "profile0x0006": False,
+                "profile0x0101": False,
+                "profile0x0102": False,
+                "profile0x0103": False,
+                "profile0x0104": False,
+            },
+            "maxNumberROHC-ContextSessions": "cs2",
+        },
+        "phy-Parameters": {},
+        "rf-Parameters": {"supportedBandListNR": [{"bandNR": 41}]},
+    }
+    ue_nr = NR_RRC_Definitions.UE_NR_Capability
+    ue_nr.set_val(minimal)
+    encoded = bytes(ue_nr.to_uper())
+
+    # Re-encode under a different band for the second container so the two
+    # decoded values are demonstrably distinct.
+    minimal["rf-Parameters"]["supportedBandListNR"] = [{"bandNR": 78}]
+    ue_nr.set_val(minimal)
+    encoded2 = bytes(ue_nr.to_uper())
+
+    msg = Asn1Message(
+        rrc_transaction_id=0,
+        rat_containers=(
+            Asn1RatContainer(rat_type="nr", encoded=encoded),
+            Asn1RatContainer(rat_type="nr", encoded=encoded2),
+        ),
+        start_line=1,
+        end_line=10,
+    )
+    decoded = decode_message_containers(msg)
+    assert len(decoded) == 2
+    assert decoded[0]["rf-Parameters"]["supportedBandListNR"][0]["bandNR"] == 41
+    assert decoded[1]["rf-Parameters"]["supportedBandListNR"][0]["bandNR"] == 78
+
+
+def test_decode_message_containers_propagates_failure() -> None:
+    """If any container fails to decode, decode_message_containers raises
+    _PerDecodeError immediately (caller decides recovery policy).
+    """
+    from ucap.adapters.qcat._asn1 import (
+        Asn1Message,
+        Asn1RatContainer,
+        _PerDecodeError,
+        decode_message_containers,
+    )
+
+    msg = Asn1Message(
+        rrc_transaction_id=0,
+        rat_containers=(
+            Asn1RatContainer(rat_type="nr", encoded=b"\xff" * 16),
+        ),
+        start_line=1,
+        end_line=5,
+    )
+    with pytest.raises(_PerDecodeError):
+        decode_message_containers(msg)
+
+
+def test_per_decode_error_attributes() -> None:
+    """_PerDecodeError carries rat_type, failure_reason, and the original exception."""
+    from ucap.adapters.qcat._asn1 import _PerDecodeError
+
+    inner = ValueError("test inner")
+    err = _PerDecodeError(
+        rat_type="nr", failure_reason="per_decode_failed", original=inner
+    )
+    assert err.rat_type == "nr"
+    assert err.failure_reason == "per_decode_failed"
+    assert err.original is inner
+    assert "rat-Type='nr'" in str(err)

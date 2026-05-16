@@ -463,6 +463,108 @@ def _expect(
     return pos + 1
 
 
+# ─── L2: PER decoder (D-019) ────────────────────────────────────────
+
+
+class _PerDecodeError(Exception):
+    """Internal exception raised when pycrate fails to decode a per-RAT OCTET STRING.
+
+    Carries ``rat_type`` and a bounded ``failure_reason`` enum token (currently
+    always ``"per_decode_failed"``; future refinements can sub-bucket). The
+    dispatcher wraps this exception as :data:`QCT-E004` via
+    ``format_code("QCT-E004", rat_type=..., line=..., failure_reason=...)``
+    before emitting to stderr or to a compact report.
+    """
+
+    def __init__(self, rat_type: str, failure_reason: str, original: Exception) -> None:
+        super().__init__(
+            f"PER decode failed for rat-Type={rat_type!r}: {failure_reason}"
+        )
+        self.rat_type = rat_type
+        self.failure_reason = failure_reason
+        self.original = original
+
+
+def _get_pycrate_type(rat_type: str):
+    """Look up the pycrate ASN.1 type object for a given ``rat-Type`` enum value.
+
+    Per D-015 / D-019:
+
+    - ``"eutra"``        → TS 36.331 ``UE_EUTRA_Capability``
+    - ``"nr"``           → TS 38.331 ``UE_NR_Capability``
+    - ``"eutra-nr"``     → TS 38.331 ``UE_MRDC_Capability`` (EN-DC outer container)
+    - ``"mrdc-XPDCP"``   → TS 38.331 ``UE_MRDC_Capability`` (Rel-15 variant)
+
+    Imports are lazy so ucap's startup doesn't pay the pycrate-load cost when
+    only the indented-tree adapter is exercised.
+
+    Raises ``ValueError`` on unsupported ``rat_type``.
+    """
+    if rat_type == "eutra":
+        from pycrate_asn1dir.RRCLTE import EUTRA_RRC_Definitions
+        return EUTRA_RRC_Definitions.UE_EUTRA_Capability
+    if rat_type == "nr":
+        from pycrate_asn1dir.RRCNR import NR_RRC_Definitions
+        return NR_RRC_Definitions.UE_NR_Capability
+    if rat_type in ("eutra-nr", "mrdc-XPDCP"):
+        from pycrate_asn1dir.RRCNR import NR_RRC_Definitions
+        return NR_RRC_Definitions.UE_MRDC_Capability
+    raise ValueError(
+        f"Unsupported rat-Type {rat_type!r} "
+        f"(expected one of: 'eutra', 'nr', 'eutra-nr', 'mrdc-XPDCP')"
+    )
+
+
+def _bucket_per_decode_failure(exc: Exception) -> str:
+    """Map a pycrate exception to one of the QCT-E002 ``{validation_failure}``
+    bounded-enum tokens documented in :mod:`ucap.diagnostics`.
+
+    v1 implementation is coarse — any pycrate decode failure buckets to
+    ``"per_decode_failed"``. Future refinement could parse exception text to
+    distinguish ``type_mismatch`` / ``value_out_of_range`` etc. but the value
+    of those buckets is low until real-log experience suggests which are
+    actually informative.
+    """
+    return "per_decode_failed"
+
+
+def decode_rat_container(container: Asn1RatContainer) -> dict:
+    """PER-decode a single :class:`Asn1RatContainer` via pycrate.
+
+    Returns the decoded value as a Python dict (pycrate's natural shape for
+    ASN.1 SEQUENCE values — nested dicts, tuples for CHOICE, lists for
+    SEQUENCE-OF, bytes for OCTET STRING, ints / bools / strs for primitives).
+
+    Raises :class:`_PerDecodeError` on pycrate decode failure — the
+    dispatcher (or other caller) catches this and emits ``QCT-E004``.
+    Raises ``ValueError`` if ``container.rat_type`` is unsupported.
+    """
+    pyc_type = _get_pycrate_type(container.rat_type)
+    try:
+        pyc_type.from_uper(container.encoded)
+    except Exception as exc:  # pycrate raises various exception types
+        raise _PerDecodeError(
+            rat_type=container.rat_type,
+            failure_reason=_bucket_per_decode_failure(exc),
+            original=exc,
+        ) from exc
+    return pyc_type.get_val()
+
+
+def decode_message_containers(msg: Asn1Message) -> tuple[dict, ...]:
+    """Decode all RAT containers in an :class:`Asn1Message`.
+
+    Returns a tuple of decoded dicts, one per container, in the same order as
+    :attr:`Asn1Message.rat_containers`. Raises :class:`_PerDecodeError` on
+    the first failure; the caller decides whether to wrap as ``QCT-E004`` and
+    abort the message, or to attempt partial recovery (L3's policy choice).
+    """
+    return tuple(decode_rat_container(c) for c in msg.rat_containers)
+
+
+# ─── Utility: brace matching ────────────────────────────────────────
+
+
 def _find_matching_brace(text: str, open_pos: int) -> int:
     """Find the index of the ``}`` that matches ``text[open_pos]`` (a ``{``).
 
