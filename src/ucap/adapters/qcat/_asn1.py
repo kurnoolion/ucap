@@ -40,6 +40,9 @@ from ucap.schema import (
     EutraSection,
     Meta,
     Modulation,
+    MrdcBandCombination,
+    MrdcComboKind,
+    MrdcComboSource,
     MrdcSection,
     NrBand,
     NrBandCombination,
@@ -627,28 +630,33 @@ def map_asn1_message_to_canonical(
     nr: NrSection | None = None
     mrdc: MrdcSection | None = None
 
+    # Two-pass dispatch: pass 1 decodes everything + collects the NR per-CC
+    # tables (MRDC's mapper reuses them per D-015 / D-018 — the MRDC container
+    # has its own featureSetCombinations but no per-CC tables; those live with
+    # ue-NR-Capability). Pass 2 dispatches each decoded container to its
+    # canonical mapper with the per-CC tables available.
+    decoded_pairs: list[tuple[str, dict]] = []
+    nr_per_cc = _NrPerCcTablesDict()
     for container in msg.rat_containers:
         decoded = decode_rat_container(container)  # raises _PerDecodeError
-        rat = container.rat_type
+        decoded_pairs.append((container.rat_type, decoded))
+        if container.rat_type == "nr" and not nr_per_cc.downlink and not nr_per_cc.uplink:
+            # First NR container's tables become the shared reference.
+            nr_per_cc = _collect_nr_per_cc_tables_dict(decoded)
+
+    for rat, decoded in decoded_pairs:
         if rat == "eutra":
             if eutra is None:
                 eutra = _map_eutra_from_dict(decoded)
                 rats_present.append("eutra")
-            else:
-                # Multiple eutra containers in one message — unusual; ignore.
-                # Could be a hard-flag in close-session, but not v1-blocking.
-                pass
         elif rat == "nr":
             if nr is None:
                 nr = _map_nr_from_dict(decoded)
                 rats_present.append("nr")
-            else:
-                pass  # Multiple NR containers — unusual; first wins.
         elif rat in ("eutra-nr", "mrdc-XPDCP"):
-            raise NotImplementedError(
-                "L3 MRDC mapping not yet implemented (task #17 follow-on). "
-                "Decoded dict is available via decode_rat_container() for inspection."
-            )
+            if mrdc is None:
+                mrdc = _map_mrdc_from_dict(decoded, nr_per_cc=nr_per_cc)
+                rats_present.append("mrdc")
         else:
             raise ValueError(f"Unsupported rat-Type {rat!r} in ASN.1 message")
 
@@ -1190,6 +1198,130 @@ def _resolve_per_cc_dict(
         if fspc.get(mod_field)
         else None,
     }
+
+
+# ─── MRDC mapper (TS 38.331 UE-MRDC-Capability → MrdcSection) ───────
+
+
+def _map_mrdc_from_dict(
+    decoded: dict, *, nr_per_cc: _NrPerCcTablesDict
+) -> MrdcSection:
+    """Map a pycrate-decoded ``UE-MRDC-Capability`` dict to :class:`MrdcSection`.
+
+    The MRDC container carries its **own** ``featureSetCombinations`` table
+    (separate from the NR container's) but **reuses the NR per-CC tables**
+    for feature-set resolution per `D-015` / `D-018`. The two-pass dispatcher
+    in :func:`map_asn1_message_to_canonical` collects ``nr_per_cc`` from the
+    NR container before processing the MRDC container.
+
+    Coverage:
+
+    - ``rf-ParametersMRDC.supportedBandCombinationList`` → main EN-DC combos
+      (``MrdcComboKind="endc"`` / ``MrdcComboSource="main"``).
+    - ``rf-ParametersMRDC.supportedBandCombinationListNEDC-Only-r16`` →
+      NEDC combos (``kind="nedc"`` / ``source="nedcOnlyR16"``).
+    - ``rf-ParametersMRDC.supportedBandCombinationListNRDC-r16`` →
+      NRDC combos (``kind="nrdc"`` / ``source="nrdcR16"``).
+
+    Feature-set indirection resolves through ``decoded["featureSetCombinations"]``
+    (MRDC's own table) plus ``nr_per_cc`` (NR's per-CC tables).
+    """
+    # MRDC's featureSetCombinations is a direct child of UE-MRDC-Capability,
+    # NOT under a featureSets wrapper as in NR.
+    combinations = tuple(decoded.get("featureSetCombinations", []) or [])
+
+    rf_mrdc = decoded.get("rf-ParametersMRDC")
+    if not isinstance(rf_mrdc, dict):
+        return MrdcSection(bandCombinations=[])
+
+    combos: list[MrdcBandCombination] = []
+    _append_mrdc_combos_dict(
+        combos,
+        rf_mrdc.get("supportedBandCombinationList"),
+        kind="endc",
+        source="main",
+        combinations=combinations,
+        per_cc=nr_per_cc,
+    )
+    _append_mrdc_combos_dict(
+        combos,
+        rf_mrdc.get("supportedBandCombinationListNEDC-Only-r16"),
+        kind="nedc",
+        source="nedcOnlyR16",
+        combinations=combinations,
+        per_cc=nr_per_cc,
+    )
+    _append_mrdc_combos_dict(
+        combos,
+        rf_mrdc.get("supportedBandCombinationListNRDC-r16"),
+        kind="nrdc",
+        source="nrdcR16",
+        combinations=combinations,
+        per_cc=nr_per_cc,
+    )
+
+    return MrdcSection(bandCombinations=combos)
+
+
+def _append_mrdc_combos_dict(
+    combos: list[MrdcBandCombination],
+    list_node: list | None,
+    *,
+    kind: MrdcComboKind,
+    source: MrdcComboSource,
+    combinations: tuple,
+    per_cc: _NrPerCcTablesDict,
+) -> None:
+    """Append :class:`MrdcBandCombination` entries to ``combos`` for each
+    BandCombination in ``list_node``. IDs continue sequentially from the
+    current length of ``combos`` (so main + nedc + nrdc share one ID space).
+    """
+    if not isinstance(list_node, list):
+        return
+    start_idx = len(combos)
+    for i, combo_entry in enumerate(list_node):
+        if not isinstance(combo_entry, dict):
+            continue
+        combo = _map_mrdc_band_combination_dict(
+            combo_entry,
+            idx=start_idx + i,
+            kind=kind,
+            source=source,
+            combinations=combinations,
+            per_cc=per_cc,
+        )
+        if combo is not None:
+            combos.append(combo)
+
+
+def _map_mrdc_band_combination_dict(
+    combo: dict,
+    *,
+    idx: int,
+    kind: MrdcComboKind,
+    source: MrdcComboSource,
+    combinations: tuple,
+    per_cc: _NrPerCcTablesDict,
+) -> MrdcBandCombination | None:
+    """Map one BandCombination dict from a UE-MRDC-Capability source list
+    to :class:`MrdcBandCombination`. ``kind`` and ``source`` are pinned by
+    the caller (main → endc, NEDC-Only-r16 → nedc, NRDC-r16 → nrdc).
+    """
+    entries, _has_eutra, _has_nr, fsc_id = _extract_combo_band_entries_dict(
+        combo, combinations, per_cc
+    )
+    if not entries:
+        return None
+    return MrdcBandCombination(
+        combinationId=idx,
+        label=_make_combo_label(entries),
+        kind=kind,
+        bands=entries,
+        bcs=_bit_string_to_list(combo.get("supportedBandwidthCombinationSet")),
+        featureSetCombinationId=fsc_id if fsc_id >= 0 else None,
+        powerClassNR=_normalize_power_class(combo.get("powerClass-v1530")),
+        source=source,
+    )
 
 
 def _parse_channel_bw_dict(bw: tuple | dict | None) -> str | None:

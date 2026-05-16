@@ -982,8 +982,169 @@ def test_map_nr_empty_band_list() -> None:
     assert section.bandCombinations == []
 
 
-def test_map_asn1_message_mrdc_not_implemented(monkeypatch) -> None:
-    """eutra-nr (MRDC) mapping is task-#17-follow-on; raises NotImplementedError."""
+def test_map_mrdc_endc_combo() -> None:
+    """A UE-MRDC-Capability with one main supportedBandCombination (EN-DC)
+    yields an MrdcSection with kind=endc, source=main, label combining the
+    LTE anchor + NR secondary.
+    """
+    from ucap.adapters.qcat._asn1 import _map_mrdc_from_dict, _NrPerCcTablesDict
+
+    decoded = {
+        "rf-ParametersMRDC": {
+            "supportedBandCombinationList": [
+                {
+                    "bandList": [
+                        ("eutra", {"bandEUTRA": 3, "ca-BandwidthClassDL-EUTRA": "a"}),
+                        ("nr", {"bandNR": 78, "ca-BandwidthClassDL-NR": "a"}),
+                    ],
+                    "featureSetCombination": 0,
+                },
+            ],
+        },
+        "featureSetCombinations": [
+            [  # FSC 0: two per-band entries
+                [("eutra", {})],  # band 0: EUTRA — no NR caps to resolve
+                [("nr", {"downlinkSetNR": 0, "uplinkSetNR": 0})],  # band 1: NR
+            ],
+        ],
+    }
+    section = _map_mrdc_from_dict(decoded, nr_per_cc=_NrPerCcTablesDict())
+    assert len(section.bandCombinations) == 1
+    combo = section.bandCombinations[0]
+    assert combo.combinationId == 0
+    assert combo.kind == "endc"
+    assert combo.source == "main"
+    assert combo.label == "3A-n78A"
+    assert combo.featureSetCombinationId == 0
+    assert len(combo.bands) == 2
+    assert combo.bands[0].bandEUTRA == 3
+    assert combo.bands[0].bandNR is None
+    assert combo.bands[0].caBandwidthClassDL == "A"
+    assert combo.bands[1].bandNR == 78
+    assert combo.bands[1].bandEUTRA is None
+
+
+def test_map_mrdc_three_source_lists() -> None:
+    """Main + NEDC-Only-r16 + NRDC-r16 source lists each map with the right
+    kind/source. combinationId is shared across the three lists (continues
+    sequentially).
+    """
+    from ucap.adapters.qcat._asn1 import _map_mrdc_from_dict, _NrPerCcTablesDict
+
+    decoded = {
+        "rf-ParametersMRDC": {
+            "supportedBandCombinationList": [
+                {
+                    "bandList": [
+                        ("eutra", {"bandEUTRA": 3, "ca-BandwidthClassDL-EUTRA": "a"}),
+                        ("nr", {"bandNR": 78, "ca-BandwidthClassDL-NR": "a"}),
+                    ],
+                    "featureSetCombination": 0,
+                },
+            ],
+            "supportedBandCombinationListNEDC-Only-r16": [
+                {
+                    "bandList": [
+                        ("nr", {"bandNR": 41, "ca-BandwidthClassDL-NR": "a"}),
+                    ],
+                    "featureSetCombination": 0,
+                },
+            ],
+            "supportedBandCombinationListNRDC-r16": [
+                {
+                    "bandList": [
+                        ("nr", {"bandNR": 78, "ca-BandwidthClassDL-NR": "a"}),
+                        ("nr", {"bandNR": 41, "ca-BandwidthClassDL-NR": "a"}),
+                    ],
+                    "featureSetCombination": 0,
+                },
+            ],
+        },
+        "featureSetCombinations": [
+            [[("nr", {"downlinkSetNR": 0, "uplinkSetNR": 0})] for _ in range(2)],
+        ],
+    }
+    section = _map_mrdc_from_dict(decoded, nr_per_cc=_NrPerCcTablesDict())
+    assert len(section.bandCombinations) == 3
+    assert section.bandCombinations[0].kind == "endc"
+    assert section.bandCombinations[0].source == "main"
+    assert section.bandCombinations[0].combinationId == 0
+    assert section.bandCombinations[1].kind == "nedc"
+    assert section.bandCombinations[1].source == "nedcOnlyR16"
+    assert section.bandCombinations[1].combinationId == 1
+    assert section.bandCombinations[2].kind == "nrdc"
+    assert section.bandCombinations[2].source == "nrdcR16"
+    assert section.bandCombinations[2].combinationId == 2
+
+
+def test_map_mrdc_empty() -> None:
+    """A UE-MRDC-Capability without rf-ParametersMRDC yields empty MrdcSection."""
+    from ucap.adapters.qcat._asn1 import _map_mrdc_from_dict, _NrPerCcTablesDict
+
+    section = _map_mrdc_from_dict({}, nr_per_cc=_NrPerCcTablesDict())
+    assert section.bandCombinations == []
+
+
+def test_map_mrdc_reuses_nr_per_cc_tables() -> None:
+    """When MRDC's combo references an NR feature-set, per-CC capabilities
+    pull from the supplied nr_per_cc tables. Caps populate on the NR band entry.
+    """
+    from ucap.adapters.qcat._asn1 import _map_mrdc_from_dict, _NrPerCcTablesDict
+
+    nr_per_cc = _NrPerCcTablesDict(
+        downlink=({"featureSetListPerDownlinkCC": [1]},),
+        uplink=({"featureSetListPerUplinkCC": [1]},),
+        dl_per_cc=(
+            {
+                "supportedSubcarrierSpacingDL": "kHz30",
+                "supportedBandwidthDL": ("fr1", "mhz100"),
+                "maxNumberMIMO-LayersPDSCH": "fourLayers",
+                "supportedModulationOrderDL": "qam256",
+            },
+        ),
+        ul_per_cc=(
+            {
+                "supportedSubcarrierSpacingUL": "kHz30",
+                "supportedBandwidthUL": ("fr1", "mhz100"),
+                "maxNumberMIMO-LayersPUSCH": "twoLayers",
+                "supportedModulationOrderUL": "qam256",
+            },
+        ),
+    )
+    decoded = {
+        "rf-ParametersMRDC": {
+            "supportedBandCombinationList": [
+                {
+                    "bandList": [
+                        ("eutra", {"bandEUTRA": 3, "ca-BandwidthClassDL-EUTRA": "a"}),
+                        ("nr", {"bandNR": 78, "ca-BandwidthClassDL-NR": "a"}),
+                    ],
+                    "featureSetCombination": 0,
+                },
+            ],
+        },
+        "featureSetCombinations": [
+            [
+                [("eutra", {})],  # band 0
+                [("nr", {"downlinkSetNR": 1, "uplinkSetNR": 1})],  # band 1: NR
+            ],
+        ],
+    }
+    section = _map_mrdc_from_dict(decoded, nr_per_cc=nr_per_cc)
+    nr_band = section.bandCombinations[0].bands[1]
+    assert nr_band.bandNR == 78
+    assert nr_band.scs == 30
+    assert nr_band.channelBWDL == "mhz100"
+    assert nr_band.maxLayersDL == 4
+    assert nr_band.maxLayersUL == 2
+    assert nr_band.modulationDL == "qam256"
+
+
+def test_map_asn1_message_two_containers_nr_and_mrdc(monkeypatch) -> None:
+    """A message with both an NR container and an EN-DC MRDC container
+    produces both NrSection and MrdcSection populated; MRDC's mapper reuses
+    NR's per-CC tables.
+    """
     from ucap.adapters.qcat import _asn1
     from ucap.adapters.qcat._asn1 import (
         Asn1Message,
@@ -991,14 +1152,98 @@ def test_map_asn1_message_mrdc_not_implemented(monkeypatch) -> None:
         map_asn1_message_to_canonical,
     )
 
-    monkeypatch.setattr(_asn1, "decode_rat_container", lambda _c: {})
+    nr_decoded = {
+        "accessStratumRelease": "rel17",
+        "rf-Parameters": {
+            "supportedBandListNR": [{"bandNR": 78}],
+            "supportedBandCombinationList": [
+                {
+                    "bandList": [("nr", {"bandNR": 78, "ca-BandwidthClassDL-NR": "a"})],
+                    "featureSetCombination": 0,
+                },
+            ],
+        },
+        "featureSets": {
+            "featureSetCombinations": [[[("nr", {"downlinkSetNR": 1, "uplinkSetNR": 1})]]],
+            "featureSetsDownlink": [{"featureSetListPerDownlinkCC": [1]}],
+            "featureSetsUplink": [{"featureSetListPerUplinkCC": [1]}],
+            "featureSetsDownlinkPerCC": [
+                {
+                    "supportedSubcarrierSpacingDL": "kHz30",
+                    "supportedBandwidthDL": ("fr1", "mhz100"),
+                    "maxNumberMIMO-LayersPDSCH": "fourLayers",
+                    "supportedModulationOrderDL": "qam256",
+                },
+            ],
+            "featureSetsUplinkPerCC": [
+                {
+                    "supportedSubcarrierSpacingUL": "kHz30",
+                    "supportedBandwidthUL": ("fr1", "mhz100"),
+                    "maxNumberMIMO-LayersPUSCH": "twoLayers",
+                    "supportedModulationOrderUL": "qam256",
+                },
+            ],
+        },
+    }
+    mrdc_decoded = {
+        "rf-ParametersMRDC": {
+            "supportedBandCombinationList": [
+                {
+                    "bandList": [
+                        ("eutra", {"bandEUTRA": 3, "ca-BandwidthClassDL-EUTRA": "a"}),
+                        ("nr", {"bandNR": 78, "ca-BandwidthClassDL-NR": "a"}),
+                    ],
+                    "featureSetCombination": 0,
+                },
+            ],
+        },
+        "featureSetCombinations": [
+            [
+                [("eutra", {})],
+                [("nr", {"downlinkSetNR": 1, "uplinkSetNR": 1})],
+            ],
+        ],
+    }
+
+    # Route decode_rat_container to the right synthetic dict by rat-Type.
+    def fake_decode(container):
+        if container.rat_type == "nr":
+            return nr_decoded
+        return mrdc_decoded
+
+    monkeypatch.setattr(_asn1, "decode_rat_container", fake_decode)
+
     msg = Asn1Message(
-        rrc_transaction_id=0,
-        rat_containers=(Asn1RatContainer(rat_type="eutra-nr", encoded=b"\x00"),),
-        start_line=1,
-        end_line=5,
+        rrc_transaction_id=2,
+        rat_containers=(
+            Asn1RatContainer(rat_type="nr", encoded=b"\x00"),
+            Asn1RatContainer(rat_type="eutra-nr", encoded=b"\x00"),
+        ),
+        start_line=10,
+        end_line=20,
     )
-    with pytest.raises(NotImplementedError, match="L3 MRDC mapping"):
-        map_asn1_message_to_canonical(
-            msg, vendor="qcat", release="rel17", source_file="test.txt"
-        )
+    canonical = map_asn1_message_to_canonical(
+        msg, vendor="qcat", release="rel17", source_file="test.txt"
+    )
+
+    assert set(canonical.ratsPresent) == {"nr", "mrdc"}
+    assert canonical.eutra is None
+    assert canonical.nr is not None
+    assert canonical.mrdc is not None
+
+    # NR section: one supported band, one combo with full per-CC caps.
+    assert canonical.nr.supportedBands[0].band == 78
+    assert canonical.nr.bandCombinations[0].label == "n78A"
+    assert canonical.nr.bandCombinations[0].bands[0].scs == 30
+    assert canonical.nr.bandCombinations[0].bands[0].modulationDL == "qam256"
+
+    # MRDC section: EN-DC combo with per-CC caps populated FROM NR's tables.
+    assert len(canonical.mrdc.bandCombinations) == 1
+    mrdc_combo = canonical.mrdc.bandCombinations[0]
+    assert mrdc_combo.kind == "endc"
+    assert mrdc_combo.label == "3A-n78A"
+    nr_band_in_mrdc = mrdc_combo.bands[1]
+    assert nr_band_in_mrdc.bandNR == 78
+    assert nr_band_in_mrdc.scs == 30  # Came from NR per-CC tables.
+    assert nr_band_in_mrdc.maxLayersDL == 4
+    assert nr_band_in_mrdc.modulationDL == "qam256"
