@@ -61,7 +61,7 @@ The `TreeNode` and `Message` types are conceptually tied to the indented-format 
   - Parser entry point is the `message c1 : ueCapabilityInformation : { ... }` block. The outer `value UL-DCCH-Message ::= { ... }` envelope is intentionally skipped.
   - End-of-message detected by brace matching from the opening `{` of the entry block. No hex-dump or footer expected after the closing brace.
   - No `-- comment` syntax is expected in the format; tokenizer doesn't handle comments.
-  - Per-RAT `ue-CapabilityRAT-Container` `OCTET STRING`s are PER-decoded against the appropriate 3GPP RRC schema (TS 36.331 for `rat-Type eutra`; TS 38.331 for `rat-Type nr` / `eutra-nr`) using `asn1tools` and the bundled schemas at `src/ucap/schemas/<release>/`.
+  - Per-RAT `ue-CapabilityRAT-Container` `OCTET STRING`s are PER-decoded against the appropriate 3GPP RRC schema (TS 36.331 for `rat-Type eutra`; TS 38.331 for `rat-Type nr` / `eutra-nr`) using `pycrate`'s precompiled schemas — `pycrate_asn1dir.RRCLTE.EUTRA_RRC_Definitions.UE_EUTRA_Capability`, `pycrate_asn1dir.RRCNR.NR_RRC_Definitions.UE_NR_Capability`, and `.UE_MRDC_Capability` (per `[D-019]`). The result is a Python dict consumed by the L3 mapper.
 - **Adapters consume schema types; never mutate them.** Pydantic models constructed via `Model(...)`; no post-construction field assignment.
 - **Pydantic `ValidationError` at the canonical-output boundary** is caught and wrapped in `QCT-E002` per `[D-011]`'s `{validation_failure}` enum bucketing — extended with `per_decode_failed` for ASN.1-path PER decode failures (`D-015`). Free-text validation error messages never propagate out of the adapter.
 - **Prefixed error codes via `ucap.diagnostics`** for cross-boundary failure paths: `QCT-E001` (parse fail), `QCT-E002` (canonical validation fail), `QCT-W001` (unmapped top-level field). Plus, post-`D-015` development: `QCT-E003` (ASN.1 syntax error in outer parser), `QCT-E004` (PER decode failure).
@@ -71,8 +71,9 @@ The `TreeNode` and `Message` types are conceptually tied to the indented-format 
 
 - `[D-003]` — per-vendor adapter pattern: one logical adapter per vendor (`qcat`, `shannon`, `elt`). File-vs-sub-package is per-adapter; qcat is a sub-package per `[D-018]`.
 - `[D-004]` — indent-driven tree parser for the indented format (not a grammar-aware ASN.1 parser). Robust to QCAT's two indent styles, SEQUENCE-OF type-marker collapse, NR colon-spacing variant.
-- `[D-015]` — v1 scope expansion to handle the ASN.1 value notation format with PER-decoded inner per-RAT containers via `asn1tools` + bundled 3GPP schemas.
-- `[D-016]` — schema sourcing (OpenAirInterface primary, open5gs secondary, direct 3GPP TS extraction fallback) for the bundled `.asn` files this adapter consumes during PER decoding.
+- `[D-015]` — v1 scope expansion to handle the ASN.1 value notation format with PER-decoded inner per-RAT containers. *(Partially superseded by `[D-019]` — decoder choice; scope remains.)*
+- ~~`[D-016]` — schema sourcing (OpenAirInterface primary, open5gs secondary, direct 3GPP TS extraction fallback) for the bundled `.asn` files this adapter consumes during PER decoding.~~ *(Entirely superseded by `[D-019]` — pycrate provides schemas; no ucap-internal bundling. D-016 retained as historical record only.)*
+- `[D-019]` — pivot decoder from `asn1tools` to `pycrate`; schemas come from pycrate as a runtime PyPI dependency; eliminates the `src/ucap/schemas/<release>/` bundling layer entirely.
 - `[D-017]` — paired test fixtures (`tests/fixtures/qcat/asn1/<name>_ASN1.txt`) for NFR-9 round-trip verification.
 - `[D-018]` — sub-package promotion. Dispatcher in `__init__.py`; `_indented.py` + `_asn1.py` (post-development) split.
 - `[D-009]`–`[D-013]` — chat-mediated debugging surface (error codes, reports, diagnostics module, redaction, output discipline). Adapter participates by emitting prefixed errors and contributing counts/timings to compact reports.
@@ -149,8 +150,7 @@ _File declares `__all__`; that list is what `__init__.py` re-exports and what `_
 **Depends on**
 - `src/ucap/schema/MODULE.md` — consumes `CanonicalUeCapability`, all section types, combo types, and every Literal type alias for field values.
 - `src/ucap/diagnostics/MODULE.md` — calls `format_code(...)` to raise prefixed errors; emits `RPT` / `QC` records via `ReportWriter` (post-D-015 development for the ASN.1 path).
-- *(post-D-015)* `asn1tools` PyPI package for PER decoding of inner per-RAT OCTET STRINGs in the ASN.1 format path.
-- *(post-D-015)* Bundled 3GPP schemas at `src/ucap/schemas/<release>/{ts36331,ts38331}.asn` — loaded by `_asn1.py` per the `--release` flag.
+- *(post-D-015 + D-019)* `pycrate>=0.8.1` PyPI package for PER decoding of inner per-RAT OCTET STRINGs in the ASN.1 format path. pycrate ships TS 36.331 + TS 38.331 v17.4.0 (Rel-17) precompiled schemas in `pycrate_asn1dir/` — no separate in-repo schema bundle. License: LGPL-2.1 (runtime linking from Apache 2.0 ucap is the standard exemption pattern; documented in `NFR-13`).
 
 **Depended on by**
 - `src/ucap/adapters/MODULE.md` — umbrella module references this sub-package's contract.
