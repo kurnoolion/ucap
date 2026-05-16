@@ -759,8 +759,10 @@ def test_map_asn1_message_to_canonical_eutra(monkeypatch) -> None:
     assert canonical.meta.sourceLineRange == (10, 20)
 
 
-def test_map_asn1_message_nr_not_implemented(monkeypatch) -> None:
-    """NR mapping is task-#17-follow-on; raises NotImplementedError for now."""
+def test_map_asn1_message_nr_via_monkeypatch(monkeypatch) -> None:
+    """An NR message routes through L2 (mocked) + L3 NR mapper and produces
+    a CanonicalUeCapability with an NrSection.
+    """
     from ucap.adapters.qcat import _asn1
     from ucap.adapters.qcat._asn1 import (
         Asn1Message,
@@ -768,17 +770,216 @@ def test_map_asn1_message_nr_not_implemented(monkeypatch) -> None:
         map_asn1_message_to_canonical,
     )
 
-    monkeypatch.setattr(_asn1, "decode_rat_container", lambda _c: {})
+    synthetic_decoded = {
+        "accessStratumRelease": "rel17",
+        "rf-Parameters": {
+            "supportedBandListNR": [
+                {"bandNR": 41},
+                {"bandNR": 78},
+            ],
+            "supportedBandCombinationList": [
+                {
+                    "bandList": [
+                        ("nr", {"bandNR": 78, "ca-BandwidthClassDL-NR": "a"}),
+                    ],
+                    "featureSetCombination": 0,
+                },
+            ],
+        },
+        "featureSets": {
+            "featureSetCombinations": [
+                # FeatureSetCombination 0: one per-band entry, one alt each.
+                [[("nr", {"downlinkSetNR": 0, "uplinkSetNR": 0})]],
+            ],
+            "featureSetsDownlink": [],
+            "featureSetsUplink": [],
+            "featureSetsDownlinkPerCC": [],
+            "featureSetsUplinkPerCC": [],
+        },
+    }
+
+    monkeypatch.setattr(_asn1, "decode_rat_container", lambda _c: synthetic_decoded)
+
     msg = Asn1Message(
         rrc_transaction_id=0,
         rat_containers=(Asn1RatContainer(rat_type="nr", encoded=b"\x00"),),
         start_line=1,
         end_line=5,
     )
-    with pytest.raises(NotImplementedError, match="L3 NR mapping"):
-        map_asn1_message_to_canonical(
-            msg, vendor="qcat", release="rel17", source_file="test.txt"
-        )
+    canonical = map_asn1_message_to_canonical(
+        msg, vendor="qcat", release="rel17", source_file="test.txt"
+    )
+    assert canonical.ratsPresent == ["nr"]
+    assert canonical.eutra is None
+    assert canonical.mrdc is None
+    assert canonical.nr is not None
+    assert canonical.nr.accessStratumRelease == "rel17"
+    assert [b.band for b in canonical.nr.supportedBands] == [41, 78]
+    assert [b.fr for b in canonical.nr.supportedBands] == ["FR1", "FR1"]
+    assert len(canonical.nr.bandCombinations) == 1
+    combo = canonical.nr.bandCombinations[0]
+    assert combo.combinationId == 0
+    assert combo.label == "n78A"
+    assert combo.kind == "caNR"
+    assert combo.source == "main"
+    assert combo.featureSetCombinationId == 0
+    assert combo.bcs is None
+    assert combo.bands[0].bandNR == 78
+    assert combo.bands[0].caBandwidthClassDL == "A"
+
+
+def test_map_nr_resolves_feature_set_indirection() -> None:
+    """A full feature-set chain (combo → fsc → fs → cc → per-cc) populates
+    SCS / BW / MIMO / modulation on the combo band entry.
+    """
+    from ucap.adapters.qcat._asn1 import _map_nr_from_dict
+
+    decoded = {
+        "accessStratumRelease": "rel17",
+        "rf-Parameters": {
+            "supportedBandListNR": [{"bandNR": 78}],
+            "supportedBandCombinationList": [
+                {
+                    "bandList": [
+                        ("nr", {"bandNR": 78, "ca-BandwidthClassDL-NR": "a"}),
+                    ],
+                    "featureSetCombination": 0,
+                },
+            ],
+        },
+        "featureSets": {
+            "featureSetCombinations": [
+                # fsc 0: one band, one alt — references DL set 1, UL set 1.
+                [[("nr", {"downlinkSetNR": 1, "uplinkSetNR": 1})]],
+            ],
+            # featureSetsDownlink[0] = the FeatureSetDownlink referenced by
+            # downlinkSetNR=1. Its featureSetListPerDownlinkCC[0] = 1 → CC table
+            # entry 0.
+            "featureSetsDownlink": [
+                {"featureSetListPerDownlinkCC": [1]},
+            ],
+            "featureSetsUplink": [
+                {"featureSetListPerUplinkCC": [1]},
+            ],
+            "featureSetsDownlinkPerCC": [
+                {
+                    "supportedSubcarrierSpacingDL": "kHz30",
+                    "supportedBandwidthDL": ("fr1", "mhz100"),
+                    "maxNumberMIMO-LayersPDSCH": "fourLayers",
+                    "supportedModulationOrderDL": "qam256",
+                },
+            ],
+            "featureSetsUplinkPerCC": [
+                {
+                    "supportedSubcarrierSpacingUL": "kHz30",
+                    "supportedBandwidthUL": ("fr1", "mhz100"),
+                    "maxNumberMIMO-LayersPUSCH": "twoLayers",
+                    "supportedModulationOrderUL": "qam256",
+                },
+            ],
+        },
+    }
+    section = _map_nr_from_dict(decoded)
+    assert len(section.bandCombinations) == 1
+    entry = section.bandCombinations[0].bands[0]
+    assert entry.bandNR == 78
+    assert entry.scs == 30
+    assert entry.channelBWDL == "mhz100"
+    assert entry.channelBWUL == "mhz100"
+    assert entry.maxLayersDL == 4
+    assert entry.maxLayersUL == 2
+    assert entry.modulationDL == "qam256"
+    assert entry.modulationUL == "qam256"
+
+
+def test_map_nr_with_bcs_bitmap() -> None:
+    """BIT STRING ``(value, length)`` tuple converts to MSB-first list[int]."""
+    from ucap.adapters.qcat._asn1 import _map_nr_from_dict
+
+    decoded = {
+        "accessStratumRelease": "rel17",
+        "rf-Parameters": {
+            "supportedBandListNR": [{"bandNR": 41}],
+            "supportedBandCombinationList": [
+                {
+                    "bandList": [("nr", {"bandNR": 41, "ca-BandwidthClassDL-NR": "a"})],
+                    "featureSetCombination": 0,
+                    # value=0b10100000 (160), length=8 → bits [1,0,1,0,0,0,0,0]
+                    "supportedBandwidthCombinationSet": (0b10100000, 8),
+                },
+            ],
+        },
+        "featureSets": {"featureSetCombinations": [[[("nr", {"downlinkSetNR": 0, "uplinkSetNR": 0})]]]},
+    }
+    section = _map_nr_from_dict(decoded)
+    assert section.bandCombinations[0].bcs == [1, 0, 1, 0, 0, 0, 0, 0]
+
+
+def test_map_nr_kind_caNR_when_no_mrdc_no_eutra() -> None:
+    """A combo with only NR band entries and no mrdc-Parameters → kind=caNR."""
+    from ucap.adapters.qcat._asn1 import _map_nr_from_dict
+
+    decoded = {
+        "accessStratumRelease": "rel17",
+        "rf-Parameters": {
+            "supportedBandListNR": [{"bandNR": 41}, {"bandNR": 78}],
+            "supportedBandCombinationList": [
+                {
+                    "bandList": [
+                        ("nr", {"bandNR": 41, "ca-BandwidthClassDL-NR": "a"}),
+                        ("nr", {"bandNR": 78, "ca-BandwidthClassDL-NR": "a"}),
+                    ],
+                    "featureSetCombination": 0,
+                },
+            ],
+        },
+        "featureSets": {
+            "featureSetCombinations": [
+                [
+                    [("nr", {"downlinkSetNR": 0, "uplinkSetNR": 0})],
+                    [("nr", {"downlinkSetNR": 0, "uplinkSetNR": 0})],
+                ],
+            ],
+        },
+    }
+    section = _map_nr_from_dict(decoded)
+    assert len(section.bandCombinations) == 1
+    combo = section.bandCombinations[0]
+    assert combo.kind == "caNR"
+    assert combo.label == "n41A-n78A"
+
+
+def test_map_nr_powerclass_normalization() -> None:
+    """powerClass-v1530 enum tokens map through _normalize_power_class."""
+    from ucap.adapters.qcat._asn1 import _map_nr_from_dict
+
+    decoded = {
+        "accessStratumRelease": "rel17",
+        "rf-Parameters": {
+            "supportedBandListNR": [{"bandNR": 41}],
+            "supportedBandCombinationList": [
+                {
+                    "bandList": [("nr", {"bandNR": 41, "ca-BandwidthClassDL-NR": "a"})],
+                    "featureSetCombination": 0,
+                    "powerClass-v1530": "pc2",
+                },
+            ],
+        },
+        "featureSets": {"featureSetCombinations": [[[("nr", {"downlinkSetNR": 0, "uplinkSetNR": 0})]]]},
+    }
+    section = _map_nr_from_dict(decoded)
+    assert section.bandCombinations[0].powerClassNR == "pc2"
+
+
+def test_map_nr_empty_band_list() -> None:
+    """A UE-NR-Capability with no supportedBandListNR yields an empty section."""
+    from ucap.adapters.qcat._asn1 import _map_nr_from_dict
+
+    decoded = {"accessStratumRelease": "rel15", "rf-Parameters": {}}
+    section = _map_nr_from_dict(decoded)
+    assert section.accessStratumRelease == "rel15"
+    assert section.supportedBands == []
+    assert section.bandCombinations == []
 
 
 def test_map_asn1_message_mrdc_not_implemented(monkeypatch) -> None:

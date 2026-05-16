@@ -32,17 +32,39 @@ from typing import Iterator
 
 from ucap import __version__ as _PARSER_VERSION
 from ucap.schema import (
+    CaBandwidthClass,
     CanonicalUeCapability,
     EutraBand,
     EutraCaCombination,
     EutraComboBandEntry,
     EutraSection,
     Meta,
+    Modulation,
     MrdcSection,
+    NrBand,
+    NrBandCombination,
+    NrComboBandEntry,
+    NrComboKind,
     NrSection,
+    PowerClassNR,
     RatName,
     Release,
     Vendor,
+)
+
+# Shared canonical-mapping helpers from the indented adapter. Per D-018:
+# helpers that operate on canonical-shape values (not TreeNode-specific)
+# are imported across the qcat sub-package. When the cross-import surface
+# exceeds 5 internal symbols, D-018's trigger fires a refactor into _common.py.
+from ucap.adapters.qcat._indented import (  # noqa: E402
+    _MIMO_LAYERS,
+    _MOD_MAP,
+    _POWER_CLASS_MAP,
+    _SCS_MAP,
+    _derive_fr,
+    _make_combo_label,
+    _normalize_power_class,
+    _parse_bw_class,
 )
 
 
@@ -617,10 +639,11 @@ def map_asn1_message_to_canonical(
                 # Could be a hard-flag in close-session, but not v1-blocking.
                 pass
         elif rat == "nr":
-            raise NotImplementedError(
-                "L3 NR mapping not yet implemented (task #17 follow-on). "
-                "Decoded dict is available via decode_rat_container() for inspection."
-            )
+            if nr is None:
+                nr = _map_nr_from_dict(decoded)
+                rats_present.append("nr")
+            else:
+                pass  # Multiple NR containers — unusual; first wins.
         elif rat in ("eutra-nr", "mrdc-XPDCP"):
             raise NotImplementedError(
                 "L3 MRDC mapping not yet implemented (task #17 follow-on). "
@@ -837,6 +860,383 @@ def _normalize_mimo_capability(raw: str | None) -> int | None:
         "sixteenLayers": 16,
     }
     return mapping.get(str(raw))
+
+
+# ─── NR mapper (TS 38.331 → NrSection) ──────────────────────────────
+
+
+@dataclass(frozen=True)
+class _NrPerCcTablesDict:
+    """Per-CC feature-set tables, dict-shape parallel to the indented adapter's
+    :class:`_indented._NrPerCcTables` but holding pycrate-decoded dicts.
+
+    Always sourced from ``ue-NR-Capability.featureSets`` (the NR container's
+    own ``featureSets``); the MRDC container reuses these per `D-015` /
+    `D-018` even when it has its own ``featureSetCombinations`` table.
+    """
+
+    downlink: tuple[dict, ...] = ()
+    uplink: tuple[dict, ...] = ()
+    dl_per_cc: tuple[dict, ...] = ()
+    ul_per_cc: tuple[dict, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ResolvedNrCapsDict:
+    """Resolved per-CC capabilities for one band in one combo (post-feature-set walk)."""
+
+    scs: int | None = None
+    channel_bw_dl: str | None = None
+    channel_bw_ul: str | None = None
+    max_layers_dl: int | None = None
+    max_layers_ul: int | None = None
+    modulation_dl: Modulation | None = None
+    modulation_ul: Modulation | None = None
+
+
+def _collect_nr_per_cc_tables_dict(decoded: dict) -> _NrPerCcTablesDict:
+    """Collect NR per-CC tables from ``ue-NR-Capability.featureSets``."""
+    fs = decoded.get("featureSets")
+    if not isinstance(fs, dict):
+        return _NrPerCcTablesDict()
+    return _NrPerCcTablesDict(
+        downlink=tuple(fs.get("featureSetsDownlink", []) or []),
+        uplink=tuple(fs.get("featureSetsUplink", []) or []),
+        dl_per_cc=tuple(fs.get("featureSetsDownlinkPerCC", []) or []),
+        ul_per_cc=tuple(fs.get("featureSetsUplinkPerCC", []) or []),
+    )
+
+
+def _map_nr_from_dict(decoded: dict) -> NrSection:
+    """Map a pycrate-decoded ``UE-NR-Capability`` dict to an :class:`NrSection`.
+
+    Coverage:
+
+    - ``accessStratumRelease`` from the base SEQUENCE.
+    - ``supportedBands`` from ``rf-Parameters.supportedBandListNR`` (one
+      :class:`NrBand` per entry; FR derived from band number per `_derive_fr`).
+      ``scsSupported`` left empty (`FR-17` deferred).
+    - ``bandCombinations`` from ``rf-Parameters.supportedBandCombinationList``
+      with feature-set indirection resolved per `D-015`.
+
+    Pure UE-NR-Capability never carries EUTRA bands or mrdc-Parameters, so
+    every combo's :attr:`NrBandCombination.kind` is ``"caNR"``.
+
+    **Deferred** (`FR-16`): ``supportedBandCombinationList-v1540``,
+    ``-v1590`` extensions.
+    """
+    asr = decoded.get("accessStratumRelease", "unknown")
+
+    bands: list[NrBand] = []
+    rf = decoded.get("rf-Parameters", {})
+    band_list_raw = rf.get("supportedBandListNR", []) or []
+    for entry in band_list_raw:
+        if not isinstance(entry, dict):
+            continue
+        b = entry.get("bandNR")
+        if b is None:
+            continue
+        bands.append(NrBand(band=int(b), fr=_derive_fr(int(b)), scsSupported=[]))
+
+    per_cc = _collect_nr_per_cc_tables_dict(decoded)
+    fs = decoded.get("featureSets")
+    combinations = (
+        tuple(fs.get("featureSetCombinations", []) or [])
+        if isinstance(fs, dict)
+        else ()
+    )
+
+    combos: list[NrBandCombination] = []
+    main_list = rf.get("supportedBandCombinationList", []) or []
+    for i, combo_entry in enumerate(main_list):
+        combo = _map_nr_band_combination_dict(
+            combo_entry,
+            idx=i,
+            source="main",
+            combinations=combinations,
+            per_cc=per_cc,
+        )
+        if combo is not None:
+            combos.append(combo)
+
+    return NrSection(
+        accessStratumRelease=str(asr),
+        supportedBands=bands,
+        bandCombinations=combos,
+    )
+
+
+def _map_nr_band_combination_dict(
+    combo: dict,
+    *,
+    idx: int,
+    source: str,
+    combinations: tuple[dict, ...] | tuple[list, ...],
+    per_cc: _NrPerCcTablesDict,
+) -> NrBandCombination | None:
+    """Map one ``BandCombination`` dict to :class:`NrBandCombination`.
+
+    Pulls feature-set-resolved per-CC caps for NR bands via
+    :func:`_resolve_nr_caps_dict`. EUTRA bands (only possible in MRDC
+    containers; pure NR shouldn't have them) carry their own BW class but
+    no per-CC NR caps.
+    """
+    entries, has_eutra, has_nr, fsc_id = _extract_combo_band_entries_dict(
+        combo, combinations, per_cc
+    )
+    if not entries:
+        return None
+
+    has_mrdc = "mrdc-Parameters" in combo
+    if has_eutra:
+        kind: NrComboKind = "endc"
+    elif has_mrdc and has_nr:
+        kind = "nrdc"
+    else:
+        kind = "caNR"
+
+    return NrBandCombination(
+        combinationId=idx,
+        label=_make_combo_label(entries),
+        kind=kind,
+        bands=entries,
+        bcs=_bit_string_to_list(combo.get("supportedBandwidthCombinationSet")),
+        featureSetCombinationId=fsc_id if fsc_id >= 0 else None,
+        powerClassNR=_normalize_power_class(combo.get("powerClass-v1530")),
+        source=source,  # type: ignore[arg-type]
+    )
+
+
+def _extract_combo_band_entries_dict(
+    combo: dict,
+    combinations: tuple,
+    per_cc: _NrPerCcTablesDict,
+) -> tuple[list[NrComboBandEntry], bool, bool, int]:
+    """Walk ``combo.bandList`` (a list of ``BandParameters`` CHOICE values).
+
+    Each entry is a ``(tag, sub-dict)`` tuple in pycrate's CHOICE
+    representation: tag is ``"eutra"`` or ``"nr"``; sub-dict carries the
+    band number and CA bandwidth classes for that direction.
+
+    Returns ``(entries, has_eutra, has_nr, fsc_id)``. ``fsc_id`` is the
+    0-indexed ``featureSetCombination`` reference or -1 if absent.
+    """
+    band_list = combo.get("bandList", []) or []
+    fsc_id_raw = combo.get("featureSetCombination")
+    fsc_id = int(fsc_id_raw) if fsc_id_raw is not None else -1
+
+    has_eutra = False
+    has_nr = False
+    entries: list[NrComboBandEntry] = []
+
+    for band_idx, bp in enumerate(band_list):
+        # bp is pycrate's CHOICE form: (tag, sub-dict).
+        if not isinstance(bp, tuple) or len(bp) != 2:
+            continue
+        tag, sub = bp
+        if not isinstance(sub, dict):
+            continue
+        if tag == "eutra":
+            has_eutra = True
+            band_e = sub.get("bandEUTRA")
+            entries.append(
+                NrComboBandEntry(
+                    bandEUTRA=int(band_e) if band_e is not None else None,
+                    caBandwidthClassDL=_normalize_bw_class(
+                        sub.get("ca-BandwidthClassDL-EUTRA")
+                    ),
+                    caBandwidthClassUL=_normalize_bw_class(
+                        sub.get("ca-BandwidthClassUL-EUTRA")
+                    ),
+                )
+            )
+        elif tag == "nr":
+            has_nr = True
+            caps = _resolve_nr_caps_dict(
+                band_idx=band_idx,
+                fsc_id=fsc_id,
+                combinations=combinations,
+                per_cc=per_cc,
+            )
+            band_n = sub.get("bandNR")
+            entries.append(
+                NrComboBandEntry(
+                    bandNR=int(band_n) if band_n is not None else None,
+                    caBandwidthClassDL=_normalize_bw_class(
+                        sub.get("ca-BandwidthClassDL-NR")
+                    ),
+                    caBandwidthClassUL=_normalize_bw_class(
+                        sub.get("ca-BandwidthClassUL-NR")
+                    ),
+                    scs=caps.scs,
+                    channelBWDL=caps.channel_bw_dl,
+                    channelBWUL=caps.channel_bw_ul,
+                    maxLayersDL=caps.max_layers_dl,
+                    maxLayersUL=caps.max_layers_ul,
+                    modulationDL=caps.modulation_dl,
+                    modulationUL=caps.modulation_ul,
+                )
+            )
+
+    return entries, has_eutra, has_nr, fsc_id
+
+
+def _resolve_nr_caps_dict(
+    *,
+    band_idx: int,
+    fsc_id: int,
+    combinations: tuple,
+    per_cc: _NrPerCcTablesDict,
+) -> _ResolvedNrCapsDict:
+    """Walk the feature-set indirection chain for one band in one combo.
+
+    ``fsc_id`` is the 0-indexed ``featureSetCombination`` index. Per 3GPP
+    convention, the downstream feature-set IDs (``downlinkSetNR``,
+    ``uplinkSetNR``, and the per-CC IDs inside ``featureSetListPerDownlinkCC``
+    / ``UplinkCC``) are **1-indexed** with ``0`` meaning "no feature set."
+    """
+    if fsc_id < 0 or fsc_id >= len(combinations):
+        return _ResolvedNrCapsDict()
+    per_band_entries = combinations[fsc_id]
+    if not isinstance(per_band_entries, list) or band_idx >= len(per_band_entries):
+        return _ResolvedNrCapsDict()
+    fspb_alts = per_band_entries[band_idx]
+    if not isinstance(fspb_alts, list) or not fspb_alts:
+        return _ResolvedNrCapsDict()
+    # Take the first alternative (active feature set).
+    first_alt = fspb_alts[0]
+    if not isinstance(first_alt, tuple) or len(first_alt) != 2:
+        return _ResolvedNrCapsDict()
+    tag, fs_dict = first_alt
+    if tag != "nr" or not isinstance(fs_dict, dict):
+        return _ResolvedNrCapsDict()
+
+    dl_set = int(fs_dict.get("downlinkSetNR", 0) or 0)
+    ul_set = int(fs_dict.get("uplinkSetNR", 0) or 0)
+
+    dl = _resolve_per_cc_dict(
+        dl_set,
+        per_cc.downlink,
+        per_cc.dl_per_cc,
+        cc_list_field="featureSetListPerDownlinkCC",
+        scs_field="supportedSubcarrierSpacingDL",
+        bw_field="supportedBandwidthDL",
+        mimo_field="maxNumberMIMO-LayersPDSCH",
+        mod_field="supportedModulationOrderDL",
+    )
+    ul = _resolve_per_cc_dict(
+        ul_set,
+        per_cc.uplink,
+        per_cc.ul_per_cc,
+        cc_list_field="featureSetListPerUplinkCC",
+        scs_field="supportedSubcarrierSpacingUL",
+        bw_field="supportedBandwidthUL",
+        mimo_field="maxNumberMIMO-LayersPUSCH",
+        mod_field="supportedModulationOrderUL",
+    )
+
+    return _ResolvedNrCapsDict(
+        scs=dl["scs"] or ul["scs"],
+        channel_bw_dl=dl["bw"],
+        channel_bw_ul=ul["bw"],
+        max_layers_dl=dl["layers"],
+        max_layers_ul=ul["layers"],
+        modulation_dl=dl["mod"],
+        modulation_ul=ul["mod"],
+    )
+
+
+def _resolve_per_cc_dict(
+    set_idx: int,
+    fs_list: tuple[dict, ...],
+    per_cc_list: tuple[dict, ...],
+    *,
+    cc_list_field: str,
+    scs_field: str,
+    bw_field: str,
+    mimo_field: str,
+    mod_field: str,
+) -> dict:
+    """Resolve a FeatureSetDownlink/Uplink → first CC → FeatureSetXPerCC entry."""
+    empty: dict = {"scs": None, "bw": None, "layers": None, "mod": None}
+    if set_idx <= 0 or set_idx > len(fs_list):
+        return empty
+    fs_entry = fs_list[set_idx - 1]
+    if not isinstance(fs_entry, dict):
+        return empty
+    cc_id_list = fs_entry.get(cc_list_field, []) or []
+    if not cc_id_list:
+        return empty
+    # CC list entries are FeatureSetXPerCC-Id INTEGER values (1-indexed; 0 = absent).
+    cc_id_raw = cc_id_list[0]
+    try:
+        cc_id = int(cc_id_raw)
+    except (TypeError, ValueError):
+        return empty
+    if cc_id <= 0 or cc_id > len(per_cc_list):
+        return empty
+    fspc = per_cc_list[cc_id - 1]
+    if not isinstance(fspc, dict):
+        return empty
+    return {
+        "scs": _SCS_MAP.get(str(fspc.get(scs_field)).strip())
+        if fspc.get(scs_field)
+        else None,
+        "bw": _parse_channel_bw_dict(fspc.get(bw_field)),
+        "layers": _MIMO_LAYERS.get(str(fspc.get(mimo_field)).strip())
+        if fspc.get(mimo_field)
+        else None,
+        "mod": _MOD_MAP.get(str(fspc.get(mod_field)).strip())
+        if fspc.get(mod_field)
+        else None,
+    }
+
+
+def _parse_channel_bw_dict(bw: tuple | dict | None) -> str | None:
+    """Parse ``SupportedBandwidth`` CHOICE → canonical BW string (e.g. ``"mhz100"``).
+
+    pycrate represents the CHOICE as a tuple ``(tag, value)`` where ``tag``
+    is ``"fr1"`` or ``"fr2"`` and ``value`` is the ENUMERATED token string.
+    """
+    if bw is None:
+        return None
+    if isinstance(bw, tuple) and len(bw) == 2:
+        tag, value = bw
+        if tag in ("fr1", "fr2") and isinstance(value, str):
+            return value
+    return None
+
+
+def _normalize_bw_class(raw: object) -> CaBandwidthClass | None:
+    """Normalize pycrate's lowercase ASN.1 ENUMERATED token (``"a"``, ``"b"``, …)
+    to the canonical uppercase :data:`CaBandwidthClass` (``"A"``, ``"B"``, …).
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if len(s) == 1:
+        upper = s.upper()
+        if upper in ("A", "B", "C", "D", "E", "F"):
+            return upper  # type: ignore[return-value]
+    return None
+
+
+def _bit_string_to_list(bs: object) -> list[int] | None:
+    """Convert pycrate's BIT STRING tuple ``(value, length)`` to a list of bits.
+
+    Returns the bits in MSB-first order per ASN.1 convention.
+    """
+    if bs is None:
+        return None
+    if not isinstance(bs, tuple) or len(bs) != 2:
+        return None
+    value, length = bs
+    try:
+        value = int(value)
+        length = int(length)
+    except (TypeError, ValueError):
+        return None
+    return [(value >> (length - 1 - i)) & 1 for i in range(length)]
 
 
 def _format_eutra_combo_label(entries: list[EutraComboBandEntry]) -> str:
