@@ -81,17 +81,13 @@ def _cmd_parse(args: argparse.Namespace) -> int:
 
 def _parse_log(log_file: Path, *, vendor: str, release: str):
     if vendor == "qcat":
-        from ucap.adapters.qcat import map_message_to_canonical, parse_qcat_file
-        messages = parse_qcat_file(log_file)
-        return [
-            map_message_to_canonical(
-                m,
-                vendor="qcat",
-                release=release,  # type: ignore[arg-type]
-                source_file=log_file.name,
-            )
-            for m in messages
-        ]
+        from ucap.adapters.qcat import parse_qcat_to_canonical
+        return parse_qcat_to_canonical(
+            log_file,
+            vendor="qcat",
+            release=release,  # type: ignore[arg-type]
+            source_file=log_file.name,
+        )
     if vendor == "shannon":
         from ucap.adapters.shannon import parse_shannon_log
         return parse_shannon_log(log_file, release=release)
