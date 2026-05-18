@@ -288,3 +288,91 @@ def test_extract_raises_when_inner_not_dissected():
     tree = parse_wireshark_text(text)
     with pytest.raises(WiresharkEnvelopeError, match="no dissected inner content"):
         extract_rat_containers(tree)
+
+
+def test_extract_handles_item_without_sequence_wrapper():
+    """Some Wireshark versions omit the ``UE-CapabilityRAT-Container``
+    SEQUENCE-type summary wrapper between ``Item N`` and the fields. The
+    walker must accept both shapes.
+    """
+    text = (
+        "Radio Resource Control (RRC) protocol\n"
+        "  UL-DCCH-Message\n"
+        "    message: c1 (0)\n"
+        "      c1: ueCapabilityInformation (9)\n"
+        "        ueCapabilityInformation\n"
+        "          rrc-TransactionIdentifier: 0\n"
+        "          criticalExtensions: ueCapabilityInformation (0)\n"
+        "            ueCapabilityInformation\n"
+        "              ue-CapabilityRAT-ContainerList: 1 item\n"
+        "                Item 0\n"
+        # No "UE-CapabilityRAT-Container" wrapper — fields are direct
+        # children of Item 0.
+        "                  rat-Type: nr (0)\n"
+        "                  ue-CapabilityRAT-Container [FC*]: deadbeef\n"
+        "                    UE-NR-Capability\n"
+        "                      accessStratumRelease: rel15 (0)\n"
+    )
+    pairs = extract_rat_containers(parse_wireshark_text(text))
+    assert pairs == [("nr", {"accessStratumRelease": "rel15"})]
+
+
+def test_extract_error_message_shows_actual_children():
+    """A missing inner field's error message must list the children Wireshark
+    *did* emit, so the user can diagnose the shape mismatch without re-reading
+    the file."""
+    text = (
+        "Radio Resource Control (RRC) protocol\n"
+        "  UL-DCCH-Message\n"
+        "    message: c1 (0)\n"
+        "      c1: ueCapabilityInformation (9)\n"
+        "        ueCapabilityInformation\n"
+        "          rrc-TransactionIdentifier: 0\n"
+        "          criticalExtensions: ueCapabilityInformation (0)\n"
+        "            ueCapabilityInformation\n"
+        "              ue-CapabilityRAT-ContainerList: 1 item\n"
+        "                Item 0\n"
+        # rat-Type present but no ue-CapabilityRAT-Container at all.
+        "                  rat-Type: nr (0)\n"
+        "                  some-other-field: 42\n"
+    )
+    tree = parse_wireshark_text(text)
+    with pytest.raises(WiresharkEnvelopeError) as exc_info:
+        extract_rat_containers(tree)
+    msg = str(exc_info.value)
+    # The error mentions the item by its actual node name (not just a line
+    # number that reads ambiguously) and shows what was actually present.
+    assert "Item 0" in msg
+    assert "source line" in msg
+    assert "rat-Type" in msg or "some-other-field" in msg
+
+
+def test_extract_does_not_descend_into_inner_for_field_lookup():
+    """The walker must not pick up ``rat-Type`` or ``ue-CapabilityRAT-Container``
+    that appears *inside* the decoded UE-*-Capability content. Stops at any
+    node whose name starts with ``UE-``.
+    """
+    # Pathological case: a UE-NR-Capability containing a (made-up) field
+    # named "rat-Type" — the walker must use the outer rat-Type, not this
+    # inner accidental match.
+    text = (
+        "Radio Resource Control (RRC) protocol\n"
+        "  UL-DCCH-Message\n"
+        "    message: c1 (0)\n"
+        "      c1: ueCapabilityInformation (9)\n"
+        "        ueCapabilityInformation\n"
+        "          rrc-TransactionIdentifier: 0\n"
+        "          criticalExtensions: ueCapabilityInformation (0)\n"
+        "            ueCapabilityInformation\n"
+        "              ue-CapabilityRAT-ContainerList: 1 item\n"
+        "                Item 0\n"
+        "                  rat-Type: nr (0)\n"
+        "                  ue-CapabilityRAT-Container [FC*]: aa\n"
+        "                    UE-NR-Capability\n"
+        "                      accessStratumRelease: rel15 (0)\n"
+        # Fake nested field that would confuse a naive recursive walker:
+        "                      rat-Type: eutra (1)\n"
+    )
+    pairs = extract_rat_containers(parse_wireshark_text(text))
+    # We get the outer rat-Type (nr), not the accidental inner one (eutra).
+    assert pairs[0][0] == "nr"

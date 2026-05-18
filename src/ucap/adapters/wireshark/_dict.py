@@ -207,38 +207,61 @@ def extract_rat_containers(tree: WsTreeNode) -> list[tuple[str, dict]]:
     for item in container_list.children:
         if not re.match(r"^Item \d+$", item.name):
             continue
-        # The Item's single child is "UE-CapabilityRAT-Container" (SEQUENCE).
         if not item.children:
             continue
-        rat_container = item.children[0]
-        rat_type_node = _find_child(rat_container, "rat-Type")
+
+        # Wireshark's tree shape inside an Item varies between versions and
+        # between LTE-RRC / NR-RRC dissectors. The two we've observed are:
+        #
+        #   (a) Item N
+        #         UE-CapabilityRAT-Container       ← SEQUENCE-type wrapper
+        #           rat-Type: <rat> (N)
+        #           ue-CapabilityRAT-Container [FC*]: <hex>
+        #             UE-{NR|EUTRA|MRDC}-Capability
+        #
+        #   (b) Item N
+        #         rat-Type: <rat> (N)              ← no wrapper
+        #         ue-CapabilityRAT-Container [FC*]: <hex>
+        #           UE-{NR|EUTRA|MRDC}-Capability
+        #
+        # Both are handled by searching the Item subtree for the two fields
+        # but stopping the descent when we hit a node whose name starts with
+        # ``UE-`` — that's the decoded inner content, which we want to find
+        # and convert separately, not search through.
+        rat_type_node = _find_descendant_outside_inner(item, "rat-Type")
         if rat_type_node is None or rat_type_node.value is None:
             raise WiresharkEnvelopeError(
-                f"Item {item.line} missing rat-Type", line=item.line,
+                f"{item.name} at source line {item.line}: missing rat-Type "
+                f"field. Direct children seen: {_child_names_summary(item)}",
+                line=item.line,
             )
         rat_type = _strip_enum_index(rat_type_node.value)
 
-        # Find the inner ue-CapabilityRAT-Container (lowercase first letter —
-        # this is the field, not the SEQUENCE type label).
-        inner = _find_child(rat_container, "ue-CapabilityRAT-Container")
+        inner = _find_descendant_outside_inner(item, "ue-CapabilityRAT-Container")
         if inner is None:
             raise WiresharkEnvelopeError(
-                f"Item {item.line} missing inner ue-CapabilityRAT-Container",
+                f"{item.name} at source line {item.line}: missing inner "
+                f"ue-CapabilityRAT-Container OCTET STRING field. Direct "
+                f"children seen: {_child_names_summary(item)}. (Expected "
+                f"Wireshark to emit `ue-CapabilityRAT-Container [FC*]: <hex>` "
+                f"with a dissected `UE-*-Capability` child beneath it.)",
                 line=item.line,
             )
-        # Wireshark dissects the OCTET STRING; the decoded sub-tree is the
-        # inner node's first child (e.g. "UE-NR-Capability").
         if not inner.children:
             raise WiresharkEnvelopeError(
-                f"Item {item.line} ue-CapabilityRAT-Container has no dissected "
-                "inner content (Wireshark didn't have the schema or the "
-                "RAT type is unknown to it)",
+                f"{item.name} at source line {item.line}: "
+                f"ue-CapabilityRAT-Container at source line {inner.line} has "
+                f"no dissected inner content. Wireshark probably didn't have "
+                f"the schema for rat-Type={rat_type!r}, or the message was "
+                f"truncated before the inner dissection started.",
                 line=inner.line,
             )
         decoded = convert_node(inner.children[0])
         if not isinstance(decoded, dict):
             raise WiresharkEnvelopeError(
-                f"Item {item.line} inner decoded content is not a SEQUENCE",
+                f"{item.name} at source line {item.line}: inner decoded "
+                f"content (line {inner.children[0].line}) is not a SEQUENCE "
+                f"(got {type(decoded).__name__}).",
                 line=inner.line,
             )
         pairs.append((rat_type, decoded))
@@ -277,6 +300,48 @@ def _find_child(node: WsTreeNode, name: str) -> WsTreeNode | None:
         if c.name == name:
             return c
     return None
+
+
+_INNER_BLOB_NAME = re.compile(r"^UE-[A-Za-z0-9]+-Capability$")
+
+
+def _find_descendant_outside_inner(
+    node: WsTreeNode, name: str
+) -> WsTreeNode | None:
+    """DFS within ``node``'s subtree for a node matching ``name``, but stop
+    descending into the decoded inner ``UE-*-Capability`` blobs — we must not
+    find the same field name *inside* the decoded content.
+
+    Used by :func:`extract_rat_containers` to tolerate Wireshark trees that
+    do or do not include a ``UE-CapabilityRAT-Container`` SEQUENCE wrapper
+    between the ``Item N`` node and the ``rat-Type`` / inner field lines.
+
+    The stop boundary is the regex ``^UE-[A-Za-z0-9]+-Capability$`` —
+    matching ``UE-NR-Capability``, ``UE-EUTRA-Capability``,
+    ``UE-MRDC-Capability``, and any future RAT inner type. The legitimate
+    SEQUENCE-type wrapper ``UE-CapabilityRAT-Container`` does NOT match
+    (it doesn't end in ``-Capability``), so the walker descends through it.
+    """
+    for c in node.children:
+        if c.name == name:
+            return c
+        if _INNER_BLOB_NAME.match(c.name):
+            # Decoded inner content — don't descend.
+            continue
+        r = _find_descendant_outside_inner(c, name)
+        if r is not None:
+            return r
+    return None
+
+
+def _child_names_summary(node: WsTreeNode) -> str:
+    """Return a compact representation of a node's direct children for use in
+    diagnostic error messages. Truncates long lists to first 6 names + count.
+    """
+    names = [c.name for c in node.children]
+    if len(names) > 6:
+        names = names[:6] + [f"... ({len(node.children) - 6} more)"]
+    return "[" + ", ".join(names) + "]" if names else "[<no children>]"
 
 
 def _strip_enum_index(value: str) -> str:
