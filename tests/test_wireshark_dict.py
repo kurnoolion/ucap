@@ -318,9 +318,8 @@ def test_extract_handles_item_without_sequence_wrapper():
 
 
 def test_extract_error_message_shows_actual_children():
-    """A missing inner field's error message must list the children Wireshark
-    *did* emit, so the user can diagnose the shape mismatch without re-reading
-    the file."""
+    """A missing inner field's error message must dump the actual subtree
+    so the user can diagnose the shape mismatch without re-reading the file."""
     text = (
         "Radio Resource Control (RRC) protocol\n"
         "  UL-DCCH-Message\n"
@@ -340,11 +339,40 @@ def test_extract_error_message_shows_actual_children():
     with pytest.raises(WiresharkEnvelopeError) as exc_info:
         extract_rat_containers(tree)
     msg = str(exc_info.value)
-    # The error mentions the item by its actual node name (not just a line
-    # number that reads ambiguously) and shows what was actually present.
+    # The error mentions the item by its actual node name and includes a
+    # subtree dump showing what was actually present.
     assert "Item 0" in msg
     assert "source line" in msg
-    assert "rat-Type" in msg or "some-other-field" in msg
+    assert "rat-Type" in msg
+    assert "some-other-field" in msg
+
+
+def test_extract_handles_non_fc_bracketed_annotation():
+    """The user reported an envelope error where the ``[FC*]`` marker in their
+    real Wireshark export was actually some non-ASCII / Unicode glyph (an
+    expert-info icon that didn't paste cleanly). The walker must still find
+    ``ue-CapabilityRAT-Container`` after any bracketed annotation is stripped.
+    """
+    text = (
+        "Radio Resource Control (RRC) protocol\n"
+        "  UL-DCCH-Message\n"
+        "    message: c1 (0)\n"
+        "      c1: ueCapabilityInformation (9)\n"
+        "        ueCapabilityInformation\n"
+        "          rrc-TransactionIdentifier: 0\n"
+        "          criticalExtensions: ueCapabilityInformation (0)\n"
+        "            ueCapabilityInformation\n"
+        "              ue-CapabilityRAT-ContainerList: 1 item\n"
+        "                Item 0\n"
+        "                  UE-CapabilityRAT-Container\n"
+        "                    rat-Type: nr (0)\n"
+        # Non-ASCII annotation — must be stripped just like [FC*].
+        "                    ue-CapabilityRAT-Container [▶ expert]: deadbeef\n"
+        "                      UE-NR-Capability\n"
+        "                        accessStratumRelease: rel15 (0)\n"
+    )
+    pairs = extract_rat_containers(parse_wireshark_text(text))
+    assert pairs == [("nr", {"accessStratumRelease": "rel15"})]
 
 
 def test_extract_does_not_descend_into_inner_for_field_lookup():

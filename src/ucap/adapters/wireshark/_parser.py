@@ -98,10 +98,17 @@ class _NodeBuilder:
 # Example: ".... ...1 " or "...0 .... ".
 _BIT_PATTERN_PREFIX = re.compile(r"^(?:[01.]{4} ){1,}[01.]{4} ")
 
-# Optional filter-context marker that appears between name and colon, e.g.
-# "ue-CapabilityRAT-Container [FC*]:". The marker is stripped; the field
-# name is what precedes the bracket.
-_FC_MARKER = re.compile(r"\s*\[FC[^\]]*\]\s*$")
+# Optional trailing bracket annotation between name and ``:``. Wireshark
+# emits ``[FC*]`` filter-context markers, ``[truncated]`` indicators, expert
+# info icons, and occasionally non-ASCII glyphs (Unicode box-drawing /
+# expert-info characters) that may not survive copy-paste cleanly. Any
+# bracketed content at the very end of the name is treated as Wireshark
+# display chrome and stripped — the field name is what precedes it.
+#
+# `[^\]]+` requires at least one character inside the brackets (so we don't
+# accidentally strip an empty ``[]`` that's somehow part of a legitimate
+# name — none in 3GPP RRC, but cheap guard).
+_FC_MARKER = re.compile(r"\s*\[[^\]]+\]\s*$")
 
 # Trailing bit-length annotation, e.g. "[bit length 2, 6 LSB pad bits, 11..
 # .... decimal value 3]". Extract length and decimal value.

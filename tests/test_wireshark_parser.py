@@ -103,6 +103,28 @@ def test_fc_marker_is_stripped_from_name():
     assert n.value == "deadbeef"
 
 
+def test_any_bracketed_annotation_is_stripped_from_name():
+    """Wireshark display annotations vary: ``[FC*]``, ``[truncated]``, or
+    Unicode/non-ASCII glyphs. Any bracketed content at the end of the name
+    is stripped — the field name is what precedes the bracket.
+    """
+    cases = [
+        "ue-CapabilityRAT-Container [truncated]: deadbeef\n",
+        "ue-CapabilityRAT-Container [→]: deadbeef\n",  # arrow glyph
+        "ue-CapabilityRAT-Container [▶ expert]: deadbeef\n",  # play-icon
+        "ue-CapabilityRAT-Container [FC *]: deadbeef\n",  # NBSP in marker
+        "ue-CapabilityRAT-Container [0x1234]: deadbeef\n",
+    ]
+    for text in cases:
+        tree = parse_wireshark_text(text)
+        n = tree.children[0]
+        assert n.name == "ue-CapabilityRAT-Container", (
+            f"failed to strip bracket annotation from: {text!r} "
+            f"(got name={n.name!r})"
+        )
+        assert n.value == "deadbeef"
+
+
 def test_bit_length_annotation_extracted():
     """A ``[bit length N, ..., decimal value V]`` annotation populates bit_info."""
     text = (

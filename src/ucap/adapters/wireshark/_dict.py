@@ -241,10 +241,12 @@ def extract_rat_containers(tree: WsTreeNode) -> list[tuple[str, dict]]:
         if inner is None:
             raise WiresharkEnvelopeError(
                 f"{item.name} at source line {item.line}: missing inner "
-                f"ue-CapabilityRAT-Container OCTET STRING field. Direct "
-                f"children seen: {_child_names_summary(item)}. (Expected "
-                f"Wireshark to emit `ue-CapabilityRAT-Container [FC*]: <hex>` "
-                f"with a dissected `UE-*-Capability` child beneath it.)",
+                f"ue-CapabilityRAT-Container OCTET STRING field. Subtree "
+                f"shape:\n{_dump_subtree(item, max_depth=3)}\n"
+                f"(Expected Wireshark to emit `ue-CapabilityRAT-Container "
+                f"[FC*]: <hex>` with a dissected `UE-*-Capability` child "
+                f"beneath it. A bracketed Wireshark annotation in the field "
+                f"name is now stripped regardless of content.)",
                 line=item.line,
             )
         if not inner.children:
@@ -342,6 +344,32 @@ def _child_names_summary(node: WsTreeNode) -> str:
     if len(names) > 6:
         names = names[:6] + [f"... ({len(node.children) - 6} more)"]
     return "[" + ", ".join(names) + "]" if names else "[<no children>]"
+
+
+def _dump_subtree(node: WsTreeNode, *, max_depth: int, _depth: int = 0) -> str:
+    """Render a subtree as indented text for diagnostic error messages.
+
+    Truncates each level's children to a small cap and stops at ``max_depth``
+    so even pathological subtrees produce a bounded, readable message.
+    """
+    indent = "  " * _depth
+    label = f"{node.name}"
+    if node.value is not None:
+        v = node.value
+        if len(v) > 40:
+            v = v[:40] + "..."
+        label += f": {v}"
+    lines = [f"{indent}{label}"]
+    if _depth >= max_depth or not node.children:
+        return "\n".join(lines)
+    shown = node.children[:6]
+    for c in shown:
+        lines.append(_dump_subtree(c, max_depth=max_depth, _depth=_depth + 1))
+    if len(node.children) > len(shown):
+        lines.append(
+            f"{indent}  ... ({len(node.children) - len(shown)} more children)"
+        )
+    return "\n".join(lines)
 
 
 def _strip_enum_index(value: str) -> str:
