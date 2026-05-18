@@ -855,3 +855,34 @@ Acyclic.
 - *Defer until full EUTRA + MRDC Wireshark samples are in hand.* Rejected — the NR path is end-to-end testable on the user's existing sample (envelope shape verified). Phased rollout matches the project's incremental-merge cadence; samples for EUTRA / MRDC arrive and tests extend naturally.
 
 **Reversibility**: High. Removing Wireshark requires deleting `src/ucap/adapters/wireshark/`, removing the CLI branch, restoring `Vendor` literal, removing `WSH` from `PREFIX_REGISTRY`, removing `WSH-E001`, and reverting the small `_dispatch_decoded_pairs` factor-out (the helper is harmless if left). The QCAT path is structurally unaffected.
+
+---
+
+## D-021: Per-section `inferredRelease` hint derived from version-suffix scan
+
+**Status**: Active
+**Date**: 2026-05-18
+**Context**: A user inspecting Wireshark-decoded output asked whether `accessStratumRelease: rel15 (0)` meant the log was Release-15. It doesn't — TS 38.331's `AccessStratumRelease ::= ENUMERATED {rel15, spare7..1}` has never populated rel16/rel17/rel18, so a fully rel17- or rel18-capable NR UE still emits `rel15`. Actual release coverage is encoded as version-suffixed field names (`-rN`, `-vMMmm`) and `nonCriticalExtension` chain depth. LTE's `accessStratumRelease` *does* track baseline AS support (rel8..rel15+) but post-baseline features still appear with the same suffixes. Without a separate hint, downstream tools either misinterpret the ENUMERATED or have to repeat the scan themselves.
+
+**Decision**: Add `inferredRelease: str | None` to each canonical section (`EutraSection`, `NrSection`, `MrdcSection`). Populated by a lexical walk of the decoded pycrate-shape dict — for every dict key encountered, match against `-r(\d{1,2})(?!\w)` and `-v(\d{2})\d{2}(?!\w)`; take the max release seen; return `"relN"` or `None` if no version-suffixed names appear. The walker descends into lists and pycrate CHOICE tuples `(tag, sub)`. The helper lives in `qcat/_asn1.py` (`infer_release()`) adjacent to the L3 mappers; both the QCAT ASN.1 path and the Wireshark path call it transparently via the shared mappers.
+
+**Why**:
+- **Per-section, not top-level.** Each RAT container has its own extension chain — an LTE-only UE could be rel12 for EUTRA, with no NR; a UE could report rel15 EUTRA + rel17 NR + rel17 MRDC. A single top-level field would conflate these. Downstream tools that want a roll-up can take `max` themselves.
+- **Lexical, not schema-aware.** No pycrate schema introspection required; works on any decoded dict including fields not yet mapped to canonical output. Robust to schema-version drift (a new field added in a future 3GPP release picks up its release immediately from its own suffix). Tradeoff: misses release implications carried only by *struct nesting* (e.g. `nonCriticalExtension` chain depth without version-suffixed fields inside). In practice 3GPP names enough fields with suffixes that the scan converges; can be augmented with chain-depth heuristics later if needed.
+- **Typed `str | None`, not the `Release` literal.** The scanner could surface release numbers beyond v1's `--release` choices (currently rel15..rel18). Constraining to the literal would force a schema change every time 3GPP releases a new spec; the looser type is forward-compatible. Downstream code that needs a typed `Release` can validate as a separate step.
+- **`None` for baseline-only.** Distinguishes "no evidence of post-rel15 features" from a confident inference. Downstream tools must handle `None` explicitly (no defaulting to e.g. `"rel15"` in the canonical layer — that would invent information).
+
+**Consequences**:
+- `EutraSection` / `NrSection` / `MrdcSection` schemas grow one optional field. Backward-compatible for readers (additive). JSON dumps with `exclude_none=True` omit it when no inference is possible.
+- Both QCAT and Wireshark adapters get the field for free (shared mappers).
+- A user comparing two captures of the same UE across releases now has a surfaced signal that doesn't require parsing the full extension chain by hand.
+- `accessStratumRelease` is preserved unchanged — the inference is additive, not replacement. A future `audit` subcommand might cross-reference them and flag mismatches (e.g. `inferredRelease > rel15` on an EUTRA section that claims `accessStratumRelease=rel10`).
+- The lexical scanner adds O(N) work over the decoded dict per container — negligible at v1 fixture sizes (<1ms even on large dicts).
+
+**Alternatives considered**:
+- *Roll-up only at the canonical-message level.* Rejected — conflates per-RAT release claims (see Why first bullet).
+- *Walk the pycrate schema to determine which release introduced each field.* Rejected — couples the canonical mapper to pycrate's schema internals; brittle against pycrate or 3GPP version updates; lexical scan is simpler and good enough.
+- *Use the `Release` literal type so the field is constrained.* Rejected — see Why third bullet. Forward-compat wins.
+- *Default to `accessStratumRelease` value when no suffixes are found.* Rejected — defaulting would mask the "no evidence" case and risk amplifying the original ENUMERATED's misleading signal.
+
+**Reversibility**: High. Field is additive and optional. Removing it requires a schema-class edit and removing one call per mapper; the `infer_release()` helper can be deleted with no downstream callers outside the three mappers and the 21 dedicated tests.

@@ -87,21 +87,75 @@ The `TreeNode` and `Message` types are conceptually tied to the indented-format 
 - **Not vendor-format-version-aware beyond what QCAT exports require.** The mapper handles Rel-10 / Rel-11 / Rel-15..Rel-18 field-name variations as they appear in QCAT output; chasing every ASN.1 release variant exhaustively is out of scope.
 
 <!-- BEGIN:STRUCTURE -->
-_Regenerated 2026-05-14 by regen-map. Do not hand-edit._
+_Regenerated 2026-05-18 by regen-map. Do not hand-edit._
 
 ### `__init__.py`
 
-_Dispatcher + public-API re-exports. The canonical contract is the Public surface section above; `__all__` here is authoritative for module-level imports._
+_Dispatcher + public-API re-exports. ``__all__`` is authoritative for module-level imports; covers both the indented and ASN.1 format adapters plus the one-step `parse_qcat_to_canonical` pipeline._
 
+- `Asn1Message` — class — pub — Re-exported from `_asn1`.
+- `Asn1RatContainer` — class — pub — Re-exported from `_asn1`.
 - `Message` — class — pub — Re-exported from `_indented`.
 - `TreeNode` — class — pub — Re-exported from `_indented`.
+- `detect_format` — function — pub — Detect QCAT export format (ASN.1 vs indented) per `FR-21`.
+- `map_asn1_message_to_canonical` — function — pub — Re-exported from `_asn1`.
 - `map_message_to_canonical` — function — pub — Re-exported from `_indented`.
+- `parse_asn1_text` — function — pub — Re-exported from `_asn1`.
 - `parse_qcat_file` — function — pub — Re-exported from `_indented`.
 - `parse_qcat_text` — function — pub — Re-exported from `_indented`.
+- `parse_qcat_to_canonical` — function — pub — One-step pipeline: read → detect → parse → map.
+
+### `_asn1.py`
+
+_The ASN.1 value-notation adapter: L1 outer parser, L2 PER decoding via pycrate, L3 dict-to-canonical mapping. Shared with the Wireshark adapter via `_dispatch_decoded_pairs` (post-`D-020`) and `infer_release` (post-`D-021`)._
+
+- `Asn1Message` — class — pub — Parsed `UE Capability Information` ASN.1 envelope.
+- `Asn1RatContainer` — class — pub — One per-RAT container with raw OCTET STRING bytes.
+- `_Asn1SyntaxError` — class — internal — Internal exception raised on ASN.1-grammar mismatches.
+- `_NrPerCcTablesDict` — class — internal — Per-CC feature-set tables (dict-shape).
+- `_PerDecodeError` — class — internal — Internal exception raised when pycrate fails to decode an OCTET STRING.
+- `_ResolvedNrCapsDict` — class — internal — Resolved per-CC capabilities for one band in one combo.
+- `_Token` — class — internal — Tokenizer token.
+- `_append_mrdc_combos_dict` — function — internal — Append MRDC combos for a given source list.
+- `_bit_string_to_list` — function — internal — Convert pycrate BIT STRING tuple to bit list.
+- `_bucket_per_decode_failure` — function — internal — Map a pycrate exception to a QCT-E002 `{validation_failure}` token.
+- `_collect_nr_per_cc_tables_dict` — function — internal — Collect NR per-CC tables from `ue-NR-Capability.featureSets`.
+- `_dispatch_decoded_pairs` — function — internal — Two-pass L3 dispatch over already-decoded `(rat_type, dict)` pairs.
+- `_expect` — function — internal — Assert tokens[pos] kind.
+- `_extract_combo_band_entries_dict` — function — internal — Walk `combo.bandList` of `BandParameters` CHOICE values.
+- `_find_matching_brace` — function — internal — Find the `}` matching `text[open_pos]`.
+- `_flatten_extensions` — function — internal — Walk `nonCriticalExtension` chain and merge each layer's fields.
+- `_format_eutra_combo_label` — function — internal — Build canonical combo label `<band><BWClass>` joined by `-`.
+- `_get_pycrate_type` — function — internal — Look up pycrate ASN.1 type object for a `rat-Type` enum value.
+- `_map_eutra_band_params_r10` — function — internal — Map one `BandParameters-r10` dict to `EutraComboBandEntry`.
+- `_map_eutra_combo_r10` — function — internal — Map one `supportedBandCombination-r10` entry to `EutraCaCombination`.
+- `_map_eutra_from_dict` — function — internal — Map pycrate-decoded `UE-EUTRA-Capability` dict to `EutraSection`.
+- `_map_mrdc_band_combination_dict` — function — internal — Map one BandCombination dict from a UE-MRDC-Capability source list.
+- `_map_mrdc_from_dict` — function — internal — Map pycrate-decoded `UE-MRDC-Capability` dict to `MrdcSection`.
+- `_map_nr_band_combination_dict` — function — internal — Map one BandCombination dict to `NrBandCombination`.
+- `_map_nr_from_dict` — function — internal — Map pycrate-decoded `UE-NR-Capability` dict to `NrSection`.
+- `_normalize_bw_class` — function — internal — Normalize pycrate's lowercase BW class token.
+- `_normalize_ca_bw_class` — function — internal — Normalize CA-BandwidthClass enum token.
+- `_normalize_mimo_capability` — function — internal — Map MIMO-Capability enum tokens to integers.
+- `_parse_channel_bw_dict` — function — internal — Parse `SupportedBandwidth` CHOICE to canonical BW string.
+- `_parse_critical_extensions` — function — internal — Parse `<choice-tag> : { <body> }`.
+- `_parse_one_message` — function — internal — Parse one `ueCapabilityInformation` block.
+- `_parse_rat_container` — function — internal — Parse one `UE-CapabilityRAT-Container` SEQUENCE.
+- `_parse_rat_container_list` — function — internal — Parse a SEQUENCE OF `UE-CapabilityRAT-Container`.
+- `_resolve_nr_caps_dict` — function — internal — Walk feature-set indirection chain for one band in one combo.
+- `_resolve_per_cc_dict` — function — internal — Resolve `FeatureSetDownlink/Uplink` → first CC → per-CC entry.
+- `_skip_value` — function — internal — Skip an unknown field's value during tokenization.
+- `_tokenize` — function — internal — Tokenize `text[start:end]`.
+- `decode_message_containers` — function — pub — Decode all RAT containers in an `Asn1Message`.
+- `decode_rat_container` — function — pub — PER-decode a single `Asn1RatContainer` via pycrate.
+- `infer_release` — function — pub — Infer 3GPP release from version-suffixed field names (per `D-021`).
+- `map_asn1_message_to_canonical` — function — pub — Full pipeline: L1 + L2 + L3 → `CanonicalUeCapability`.
+- `parse_asn1_file` — function — pub — Parse every `UE Capability Information` message from a file.
+- `parse_asn1_text` — function — pub — Yield each `UE Capability Information` message from ASN.1 text.
 
 ### `_indented.py`
 
-_File declares `__all__`; that list is what `__init__.py` re-exports and what `_asn1.py` (post-D-015) may import. All other top-level names are internal to this file._
+_File declares `__all__`; that list is what `__init__.py` re-exports. All other top-level names are internal to this file._
 
 - `Message` — class — pub — Parsed QCAT message: title, direction, timestamp, line range, root `TreeNode`.
 - `TreeNode` — class — pub — Node in the indent-driven parse tree.
@@ -110,7 +164,7 @@ _File declares `__all__`; that list is what `__init__.py` re-exports and what `_
 - `_ResolvedNrCaps` — class — internal — Per-CC capabilities resolved through the feature-set indirection chain.
 - `_append_mrdc_combos` — function — internal — Append MRDC combos from a given source list to the section.
 - `_build_tree` — function — internal — Build the indent-driven tree from tokenized lines.
-- `_collapse_sequence_of_markers` — function — internal — Collapse SEQUENCE-OF type-marker rows so `[N]` items hang under the field name.
+- `_collapse_sequence_of_markers` — function — internal — Collapse SEQUENCE-OF type-marker rows.
 - `_collect_nr_per_cc_tables` — function — internal — Gather NR per-CC tables from anywhere in the tree.
 - `_derive_fr` — function — internal — Derive frequency range (FR1 / FR2) from an NR band number.
 - `_extract_combo_band_entries` — function — internal — Pull per-CC band entries out of a combo node.
@@ -118,33 +172,31 @@ _File declares `__all__`; that list is what `__init__.py` re-exports and what `_
 - `_get_bool` — function — internal — Read a boolean child value, defaulting to False.
 - `_get_int` — function — internal — Read an integer child value, or None.
 - `_list_under` — function — internal — Return the list-element children of a named field.
-- `_make_combo_label` — function — internal — Build the human-readable combo label (e.g. `n78A-n41A`).
+- `_make_combo_label` — function — internal — Build the human-readable combo label.
 - `_map_eutra` — function — internal — Map the EUTRA RAT container to an `EutraSection`.
-- `_map_eutra_ca_combo` — function — internal — Map a single EUTRA combo node to an `EutraCaCombination`.
-- `_map_mrdc` — function — internal — Map the UE-MRDC-Capability container to an `MrdcSection`.
-- `_map_mrdc_band_combination` — function — internal — Map a single MRDC combo node to an `MrdcBandCombination`.
+- `_map_eutra_ca_combo` — function — internal — Map a single EUTRA combo node.
+- `_map_mrdc` — function — internal — Map the UE-MRDC-Capability container.
+- `_map_mrdc_band_combination` — function — internal — Map a single MRDC combo node.
 - `_map_nr` — function — internal — Map the NR RAT container to an `NrSection`.
-- `_map_nr_band_combination` — function — internal — Map a single NR combo node to an `NrBandCombination`.
-- `_merge_eutra_bcs` — function — internal — Merge BCS bitmaps from `supportedBandCombinationExt-r10` into combo records.
-- `_normalize_power_class` — function — internal — Normalize an NR power-class token to the canonical enum.
-- `_parse_binary_string` — function — internal — Parse a BIT STRING node (old wrapper or new inline form) into a list of bits.
+- `_map_nr_band_combination` — function — internal — Map a single NR combo node.
+- `_merge_eutra_bcs` — function — internal — Patch BCS bitmaps from `supportedBandCombinationExt-r10` into combos.
+- `_normalize_power_class` — function — internal — Normalize NR power-class token.
+- `_parse_binary_string` — function — internal — Parse a BIT STRING node into a list of set-bit positions.
 - `_parse_bw_class` — function — internal — Parse a CA bandwidth-class token (A–F).
-- `_parse_channel_bw` — function — internal — Parse an NR channel-bandwidth node into a canonical string.
-- `_parse_message` — function — internal — Parse one UE Capability Information block into a `Message`.
-- `_parse_mimo` — function — internal — Parse a MIMO-layers token into an integer.
-- `_parse_modulation` — function — internal — Parse a modulation-order token into the canonical enum.
-- `_parse_scs` — function — internal — Parse a sub-carrier-spacing token into kHz.
-- `_read_band_params_dl` — function — internal — Read DL band-parameter fields for an EUTRA combo entry.
-- `_read_band_params_ul` — function — internal — Read UL band-parameter fields for an EUTRA combo entry.
-- `_resolve_nr_caps` — function — internal — Resolve the NR feature-set indirection chain for one combo entry.
-- `_resolve_per_cc` — function — internal — Resolve per-CC capabilities through the feature-set tables.
+- `_parse_channel_bw` — function — internal — Parse NR channel-bandwidth CHOICE.
+- `_parse_message` — function — internal — Parse one UE Capability Information block.
+- `_parse_mimo` — function — internal — Parse MIMO-layers token.
+- `_parse_modulation` — function — internal — Parse modulation-order token.
+- `_parse_scs` — function — internal — Parse sub-carrier-spacing token to kHz.
+- `_read_band_params_dl` — function — internal — Read DL band-parameter fields.
+- `_read_band_params_ul` — function — internal — Read UL band-parameter fields.
+- `_resolve_nr_caps` — function — internal — Walk feature-set indirection for one band in one combo.
+- `_resolve_per_cc` — function — internal — Resolve per-CC capabilities through feature-set tables.
 - `_split_line` — function — internal — Split a QCAT line into (indent, name, value).
-- `_value` — function — internal — Read a node's value, or None.
+- `_value` — function — internal — Read a node's value.
 - `map_message_to_canonical` — function — pub — Map a parsed `Message` to a `CanonicalUeCapability`.
 - `parse_qcat_file` — function — pub — Parse a QCAT export file into a list of `Message`s.
 - `parse_qcat_text` — function — pub — Yield each UE Capability Information message in the text.
-
-*(`_asn1.py` lands during D-015 development; not present in this commit.)*
 <!-- END:STRUCTURE -->
 
 **Depends on**

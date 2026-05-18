@@ -1,7 +1,7 @@
 # Status
 
 **Active phase**: development
-**Last updated**: 2026-05-15
+**Last updated**: 2026-05-18
 
 ## Done
 
@@ -22,6 +22,10 @@
 - 2026-05-14 — `D-018` logged + executed: qcat adapter promoted to sub-package. `src/ucap/adapters/qcat.py` → `src/ucap/adapters/qcat/{__init__.py, _indented.py}` plus the post-development `_asn1.py`. Public API unchanged for callers; 93/93 tests still pass post-move. New `src/ucap/adapters/qcat/MODULE.md` drafted as the adapter contract covering both formats; `src/ucap/adapters/MODULE.md` rewritten as the cross-adapter umbrella pointing at per-vendor sub-modules. Shannon and ELT remain flat-file stubs (qcat-specific deferred items FR-15..FR-18 migrated to qcat/MODULE.md; FR-19 stays at the umbrella level).
 - 2026-05-14 — Architecture-phase work for `D-015` effectively complete. All design decisions for the v1 scope expansion are anchored: `D-015` (scope), `D-016` (schema sourcing), `D-017` (paired-fixture plan), `D-018` (adapter sub-package). Architecture-phase exit criteria all met. Remaining Next items are mechanical implementation tasks (error-code registrations, `asn1tools` version pin) suitable for development phase.
 - 2026-05-14 — **`D-019` logged: pivot decoder from `asn1tools` to `pycrate`.** Phase-1 schema-sourcing execution revealed that `asn1tools` cannot compile 3GPP RRC ASN.1 because of unsupported parameterized types (`SetupRelease { ElementTypeParam }` and similar). Both OAI's `nr-rrc-17.3.0.asn1` (Rel-17 v17.3.0) and pycrate's `NR-RRC-Definitions.asn` (Rel-17 v17.4.0) tripped the same error. `pycrate` handles 3GPP RRC natively (it was designed for it) and ships precompiled schemas for TS 36.331 + TS 38.331 v17.4.0. Pivot eliminates the entire `src/ucap/schemas/<release>/` bundling layer — pycrate is a runtime dependency, schemas come with it. D-015 partially superseded; D-016 fully superseded (historical record retained). FR-22/FR-23 struck through and replaced by FR-24/FR-25; NFR-11 removed; NFR-12 struck through and replaced by NFR-13. Untracked schema-bundling work (`src/ucap/schemas/rel17/*.asn`, license texts) reverted. Net effort reduction: milestone goes from ~7-10 days to ~5-7 days; architecture simpler.
+- 2026-05-15..17 — Tasks #15–#21: L1 ASN.1 value-notation parser, L2 PER decoder via pycrate, L3 EUTRA/NR/MRDC mappers, QCAT format-auto-detect dispatcher. End of arc: `parse_qcat_to_canonical()` one-step pipeline; CLI `--vendor qcat` auto-routes between indented-tree and ASN.1 formats. Real-log smoke-test on rel17 work-PC sample confirmed working. 147 tests passing.
+- 2026-05-18 — Tasks #22–#25: New `--vendor wireshark` adapter (`src/ucap/adapters/wireshark/{__init__,_parser,_dict}.py`). Wireshark RRC text export → indented `WsTreeNode` tree → pycrate-equivalent dict → existing qcat._asn1 L3 mappers via factored-out `_dispatch_decoded_pairs()`. `parse_wireshark_to_canonical()` public API; CLI dispatch wired; `Vendor` literal extended; `WSH` diagnostics prefix + `WSH-E001`. `D-020` logged. Canonical JSON byte-equivalent to QCAT path per `NFR-9`.
+- 2026-05-18 — Tasks #26–#30: Five rounds of Wireshark hardening from real-file feedback. (a) Walker handles `Item N` with or without `UE-CapabilityRAT-Container` wrapper. (b) Strip ANY bracketed annotation from field names (not just `[FC*]` — handles Wireshark expert-info Unicode glyphs). (c) Strip outer-protocol preamble (S1AP/NGAP/F1AP wrapping the RRC PDU); re-baseline indent; preserve original line numbers. (d) Accept both `ue-CapabilityRAT-Container` (TS 38.331 NR-RRC) and `ueCapabilityRAT-Container` (TS 36.331 LTE-RRC) spellings of the inner OCTET STRING field. End-to-end verified on user's real work-PC log. 224 tests passing.
+- 2026-05-18 — `D-021` candidate (pending close-session triage): `inferredRelease` per-section hint surfaced in canonical JSON, derived by lexical scan of field-name version suffixes (`-rN`, `-vMMmm`). Clarifies the misleading NR `accessStratumRelease=rel15` (which TS 38.331 never updates past rel15).
 
 ## In progress
 
@@ -34,15 +38,18 @@
 - ~~Draft `src/ucap/diagnostics/MODULE.md` (or `src/ucap/diagnostics.py` if single-file is the right scale for v1) — Pillar C.~~ ✓ Done 2026-05-14 as part of `D-011`.
 - ~~Briefly visit `/switch-phase requirements` to populate `docs/compact/requirements.md` with v1 FR / NFR covering current QCAT behavior + the chat-mediated debugging pillars.~~ ✓ Done 2026-05-14 (FR-1..FR-19 + NFR-1..NFR-8; then 2026-05-14 expansion via `D-015` for FR-20..FR-23 + NFR-9..NFR-12).
 - Run `/drift-check design` once enough MODULE.md skeletons are curated, to surface code capabilities lacking an owning FR / NFR.
-- **`/switch-phase development qcat`** to begin the `D-015` adapter implementation (L1 outer parser + L2 PER decoding via `pycrate` + L3 dict-to-canonical mapping in `src/ucap/adapters/qcat/_asn1.py`).
-  - **Architecture-phase items folded into the dev session** (mechanical, no design debate):
-    - Add `pycrate>=0.8.1` to `pyproject.toml` `[project.dependencies]` (per `D-019` / `NFR-13`). Smoke-test the import path: `from pycrate_asn1dir.RRCNR import NR_RRC_Definitions; from pycrate_asn1dir.RRCLTE import EUTRA_RRC_Definitions`.
-    - Register `QCT-E003` (ASN.1 syntax error at line {line}) + `QCT-E004` (pycrate PER decode failure for inner OCTET STRING) in `src/ucap/diagnostics/__init__.py`'s `ERROR_CODES`; extend `QCT-E002`'s `{validation_failure}` enum to include `per_decode_failed`.
-- **Development-phase prerequisite** (from `D-017`):
-  - **(per `D-017`)** User produces one paired ASN.1 fixture from a proprietary source binary corresponding to one of the existing 5 fixtures; redacted per Pillar D; committed under `tests/fixtures/qcat/asn1/`. Needed before NFR-9 test development; does not block L1/L2/L3 implementation.
-- **Optional**: `/drift-check dev-module qcat` before substantive `_asn1.py` work, to verify alignment between the new `qcat/MODULE.md` contract and the existing `_indented.py` code.
+- ~~**`/switch-phase development qcat`** to begin the `D-015` adapter implementation~~ ✓ Done across Tasks #15–#21 (L1/L2/L3 + dispatcher) and the Wireshark work in #22–#30. Net result: both QCAT formats and Wireshark text export produce the canonical JSON.
+  - ~~Add `pycrate>=0.8.1` to `pyproject.toml` `[project.dependencies]` (per `D-019` / `NFR-13`)~~ ✓ Done (Task #19).
+  - ~~Register `QCT-E003` (ASN.1 syntax error at line {line}) + `QCT-E004` (pycrate PER decode failure)~~ ✓ Done (Task #19).
+- **Development-phase prerequisite** (from `D-017`, still open):
+  - **(per `D-017`)** User produces one paired ASN.1 fixture from a proprietary source binary corresponding to one of the existing 5 fixtures; redacted per Pillar D; committed under `tests/fixtures/qcat/asn1/`. Needed before NFR-9 round-trip test development; does not block ongoing work.
+- **New**: paired Wireshark fixtures for EUTRA-only and MRDC (eutra-nr) shapes — current real Wireshark sample is partial NR only. Synthetic envelopes exercise those L3 paths in tests but real samples would harden coverage.
+- **New**: Shannon DM (`--vendor shannon`) and ELT (`--vendor elt`) adapters still stubs awaiting real-format samples (no change from before; `FR-8` reflects this).
+- ~~**Optional**: `/drift-check dev-module qcat` before substantive `_asn1.py` work~~ — qcat work landed; if a drift-check is warranted now, `/drift-check dev-full` is the better mode (touches schema/diagnostics/CLI as well).
 
 ## Flags
 
 - **Limited LLM access** — Claude does not have access to actual logs. All testing / debugging uses compact redacted reports per Pillars A–E (`project-init-interview.md` Topic 5). This constraint applies to every phase prompt and to all module designs that emit diagnostic output.
 - ~~**D-015 architecture-phase blockers**~~ ✓ Resolved 2026-05-14 by `D-016` (schema sourcing strategy) and `D-017` (paired fixture plan). Both follow-up actions tracked in Next.
+- **Wireshark sub-package lacks MODULE.md** — `src/ucap/adapters/wireshark/` was added in this session (Tasks #22–#30, `D-020`) but does not yet have its own `MODULE.md` contract (peer `qcat/` has one per `D-018`). Best handled in an architecture-phase pass; not blocking ongoing development.
+- **Drift-check never run** — STATUS has no `Last drift-check:` marker. Considered after this session and skipped; should be the first action of the next session if substantive code/doc changes are planned.

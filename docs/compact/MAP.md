@@ -1,6 +1,6 @@
 # System map
 
-Generated 2026-05-14 by regen-map. Do not hand-edit.
+Generated 2026-05-18 by regen-map. Do not hand-edit.
 
 ## Modules
 
@@ -9,6 +9,7 @@ Generated 2026-05-14 by regen-map. Do not hand-edit.
 | [ucap](../../src/ucap/MODULE.md) | The user-facing top-level package: hosts the `ucap` console-script CLI (subcommand-style dispatcher) and the package version. | |
 | [ucap.adapters](../../src/ucap/adapters/MODULE.md) | Umbrella module for per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input. | |
 | [ucap.adapters.qcat](../../src/ucap/adapters/qcat/MODULE.md) | Per-vendor parser for QCAT (Qualcomm Chipset Analyzer Toolkit) text exports of `UE Capability Information` messages. | |
+| [ucap.adapters.wireshark](../../src/ucap/adapters/wireshark/MODULE.md) | Per-vendor parser for Wireshark text exports of RRC PDUs (UE Capability Information). | [NEW] |
 | [ucap.diagnostics](../../src/ucap/diagnostics/MODULE.md) | Owns the chat-mediated debugging vocabulary for ucap: error-code registry, three compact report types (RPT / MET / QC), and the fixed-field QC template machinery. | |
 | [ucap.schema](../../src/ucap/schema/MODULE.md) | Canonical schema for UE capability band combinations — Pydantic v2 models with `extra="forbid"` and the Literal type aliases (`Vendor`, `Release`, `RatName`, etc.) that every adapter and the CLI share. | |
 
@@ -18,6 +19,7 @@ Generated 2026-05-14 by regen-map. Do not hand-edit.
 flowchart TD
     m_adapters[adapters]
     m_adapters_qcat[adapters.qcat]
+    m_adapters_wireshark[adapters.wireshark]
     m_diagnostics[diagnostics]
     m_schema[schema]
     m_ucap[ucap]
@@ -25,13 +27,16 @@ flowchart TD
     m_adapters --> m_schema
     m_adapters_qcat --> m_diagnostics
     m_adapters_qcat --> m_schema
+    m_adapters_wireshark --> m_adapters_qcat
+    m_adapters_wireshark --> m_schema
     m_ucap --> m_adapters
     m_ucap --> m_adapters_qcat
+    m_ucap --> m_adapters_wireshark
     m_ucap --> m_diagnostics
     m_ucap --> m_schema
 ```
 
-Graph is acyclic. `D-014` resolved the prior `ucap ↔ adapters` cycle via the schema split; `D-018` promotes qcat to a sub-module without introducing a new cycle.
+Graph is acyclic. `D-014` resolved the prior `ucap ↔ adapters` cycle via the schema split; `D-018` promotes qcat to a sub-module; `D-020` adds wireshark as a peer sub-module that depends on qcat (reusing `_dispatch_decoded_pairs` + L3 mappers + `infer_release`) — the qcat ↔ wireshark edge is one-way (wireshark → qcat) and does not introduce a cycle.
 
 ## Project File Structure
 
@@ -60,25 +65,30 @@ ucap/
 │       └── structure-conventions.md
 ├── pyproject.toml
 ├── src/
-│   └── ucap/                                  # The user-facing top-level package: hosts the `ucap` console-script CLI (subcommand-style dispatcher) and the package version.
+│   └── ucap/                                       # The user-facing top-level package: hosts the `ucap` console-script CLI (subcommand-style dispatcher) and the package version.
 │       ├── MODULE.md
 │       ├── __init__.py
-│       ├── adapters/                          # Umbrella module for per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input.
+│       ├── adapters/                               # Umbrella module for per-vendor parsers that map chipset-vendor modem-log text exports to `CanonicalUeCapability` records — one record per `UE Capability Information` message in the input.
 │       │   ├── MODULE.md
 │       │   ├── __init__.py
-│       │   ├── elt.py                         # MediaTek ELT (Engineer Log Tool) adapter — stub.
-│       │   ├── qcat/                          # Per-vendor parser for QCAT (Qualcomm Chipset Analyzer Toolkit) text exports of `UE Capability Information` messages.
+│       │   ├── elt.py                              # MediaTek ELT (Engineer Log Tool) adapter — stub.
+│       │   ├── qcat/                               # Per-vendor parser for QCAT (Qualcomm Chipset Analyzer Toolkit) text exports of `UE Capability Information` messages.
 │       │   │   ├── MODULE.md
-│       │   │   ├── __init__.py                # QCAT adapter — auto-dispatches between indented tree and ASN.1 value notation formats.
-│       │   │   └── _indented.py               # QCAT log text parser and canonical mapper.
-│       │   └── shannon.py                     # Samsung Shannon DM (Exynos) log adapter — stub.
-│       ├── cli.py                             # Command-line entry point.
-│       ├── diagnostics/                       # Owns the chat-mediated debugging vocabulary for ucap: error-code registry, three compact report types (RPT / MET / QC), and the fixed-field QC template machinery.
+│       │   │   ├── __init__.py                     # QCAT adapter — auto-dispatches between indented tree and ASN.1 value notation formats.
+│       │   │   ├── _asn1.py                        # QCAT ASN.1 value-notation adapter (L1 parser + L2 pycrate PER decoder + L3 canonical mapper).
+│       │   │   └── _indented.py                    # QCAT log text parser and canonical mapper.
+│       │   ├── shannon.py                          # Samsung Shannon DM (Exynos) log adapter — stub.
+│       │   └── wireshark/                          # Per-vendor parser for Wireshark text exports of RRC PDUs (UE Capability Information).
+│       │       ├── __init__.py                     # Wireshark RRC-dissection text-export adapter.
+│       │       ├── _dict.py                        # L2: convert a Wireshark `WsTreeNode` tree into pycrate-equivalent Python values.
+│       │       └── _parser.py                      # L1 parser for Wireshark RRC-dissection text exports.
+│       ├── cli.py                                  # Command-line entry point.
+│       ├── diagnostics/                            # Owns the chat-mediated debugging vocabulary for ucap: error-code registry, three compact report types (RPT / MET / QC), and the fixed-field QC template machinery.
 │       │   ├── MODULE.md
-│       │   └── __init__.py                    # Diagnostics: error codes and compact report types for chat-mediated debugging.
-│       └── schema/                            # Canonical schema for UE capability band combinations — Pydantic v2 models with `extra="forbid"` and the Literal type aliases (`Vendor`, `Release`, `RatName`, etc.) that every adapter and the CLI share.
+│       │   └── __init__.py                         # Diagnostics: error codes and compact report types for chat-mediated debugging.
+│       └── schema/                                 # Canonical schema for UE capability band combinations — Pydantic v2 models with `extra="forbid"` and the Literal type aliases (`Vendor`, `Release`, `RatName`, etc.) that every adapter and the CLI share.
 │           ├── MODULE.md
-│           └── __init__.py                    # Canonical schema for UE capability band combinations.
+│           └── __init__.py                         # Canonical schema for UE capability band combinations.
 └── tests/
     ├── __init__.py
     ├── fixtures/
@@ -89,6 +99,12 @@ ucap/
     │       ├── OnePlus9_NR.txt
     │       ├── S22_LTE.txt
     │       └── S22_NR.txt
-    ├── test_diagnostics.py                    # Tests for the diagnostics module (D-009 / D-011 / D-012 / D-013).
-    └── test_qcat.py                           # Tests for the QCAT adapter against vendored sample fixtures.
+    ├── test_diagnostics.py                         # Tests for the diagnostics module (D-009 / D-011 / D-012 / D-013).
+    ├── test_infer_release.py                       # Tests for `infer_release()` — the version-suffix scanner that derives the highest 3GPP release seen in a decoded UE Capability dict.
+    ├── test_qcat.py                                # Tests for the QCAT adapter against vendored sample fixtures.
+    ├── test_qcat_asn1.py                           # Tests for the QCAT ASN.1 value-notation parser (L1) in qcat/_asn1.py.
+    ├── test_qcat_dispatcher.py                     # Tests for the QCAT adapter dispatcher in qcat/__init__.py.
+    ├── test_wireshark_dict.py                      # Tests for the Wireshark L2 converter (tree → pycrate-equivalent dict).
+    ├── test_wireshark_e2e.py                       # End-to-end tests for the Wireshark adapter pipeline.
+    └── test_wireshark_parser.py                    # Tests for the Wireshark L1 parser (text → indented tree).
 ```
