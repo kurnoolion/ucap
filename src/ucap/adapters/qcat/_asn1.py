@@ -699,6 +699,67 @@ def _dispatch_decoded_pairs(
 # ─── L3: per-RAT mappers ────────────────────────────────────────────
 
 
+# Version-suffix patterns used by 3GPP RRC to indicate the release that
+# introduced a field:
+#   -rN / -rNN — release N (e.g. ``mac-Parameters-r17``).
+#   -vMMmm     — release MM, sub-version mm (e.g. ``rf-Parameters-v1610``
+#                = rel16.1.0; ``-v1700`` = rel17.0.0).
+# Both patterns require a non-alphanumeric boundary after the digits so we
+# don't accidentally read ``-r170`` as release 17 or ``-r9_x`` as r9.
+_VSUFFIX_R = re.compile(r"-r(\d{1,2})(?!\w)")
+_VSUFFIX_V = re.compile(r"-v(\d{2})\d{2}(?!\w)")
+
+
+def infer_release(value: object) -> str | None:
+    """Infer the 3GPP release a UE Capability container reports against.
+
+    Walks the decoded pycrate-shape value recursively and looks at every
+    dict-key encountered for a ``-rN`` or ``-vMMmm`` version suffix; takes
+    the highest release seen and returns it as ``"relN"``. Returns ``None``
+    if no version-suffixed field names appear, which typically means the
+    container only carries rel15 base fields (or rel8 base for LTE).
+
+    Why this exists: ``accessStratumRelease`` is **not** a reliable signal
+    for the practical release coverage of an NR UE Capability message.
+    TS 38.331's ``AccessStratumRelease ::= ENUMERATED {rel15, spare7..1}``
+    only populates ``rel15``; rel16/17/18 features are encoded as
+    version-suffixed field names and ``nonCriticalExtension`` chain layers.
+    A fully rel17-capable NR UE still reports ``accessStratumRelease=rel15``.
+
+    For LTE, ``accessStratumRelease`` *does* track baseline AS support
+    (rel8..rel15+), but optional features still appear with
+    ``-rN`` / ``-vMMmm`` suffixes, so this scan complements it.
+
+    The function is robust to pycrate's CHOICE shape (``(tag, sub)`` tuples)
+    and to nested lists. Field-name scanning is purely lexical — no schema
+    knowledge required.
+    """
+    max_release = 0
+
+    def _walk(v: object) -> None:
+        nonlocal max_release
+        if isinstance(v, dict):
+            for k, sub in v.items():
+                if isinstance(k, str):
+                    m = _VSUFFIX_R.search(k)
+                    if m:
+                        max_release = max(max_release, int(m.group(1)))
+                    m = _VSUFFIX_V.search(k)
+                    if m:
+                        max_release = max(max_release, int(m.group(1)))
+                _walk(sub)
+        elif isinstance(v, list):
+            for item in v:
+                _walk(item)
+        elif isinstance(v, tuple) and len(v) == 2 and isinstance(v[0], str):
+            # pycrate CHOICE form: (tag, sub-value).
+            _walk(v[1])
+        # Primitives: nothing to scan.
+
+    _walk(value)
+    return f"rel{max_release}" if max_release > 0 else None
+
+
 def _flatten_extensions(decoded: dict) -> dict:
     """Walk the ``nonCriticalExtension`` chain and merge each layer's fields
     into a flat dict.
@@ -786,6 +847,7 @@ def _map_eutra_from_dict(decoded: dict) -> EutraSection:
 
     return EutraSection(
         accessStratumRelease=str(access_stratum_release),
+        inferredRelease=infer_release(decoded),
         supportedBands=supported_bands,
         caCombinations=ca_combinations,
     )
@@ -987,6 +1049,7 @@ def _map_nr_from_dict(decoded: dict) -> NrSection:
 
     return NrSection(
         accessStratumRelease=str(asr),
+        inferredRelease=infer_release(decoded),
         supportedBands=bands,
         bandCombinations=combos,
     )
@@ -1250,7 +1313,10 @@ def _map_mrdc_from_dict(
 
     rf_mrdc = decoded.get("rf-ParametersMRDC")
     if not isinstance(rf_mrdc, dict):
-        return MrdcSection(bandCombinations=[])
+        return MrdcSection(
+            inferredRelease=infer_release(decoded),
+            bandCombinations=[],
+        )
 
     combos: list[MrdcBandCombination] = []
     _append_mrdc_combos_dict(
@@ -1278,7 +1344,10 @@ def _map_mrdc_from_dict(
         per_cc=nr_per_cc,
     )
 
-    return MrdcSection(bandCombinations=combos)
+    return MrdcSection(
+        inferredRelease=infer_release(decoded),
+        bandCombinations=combos,
+    )
 
 
 def _append_mrdc_combos_dict(

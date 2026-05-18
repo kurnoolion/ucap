@@ -77,6 +77,16 @@ class EutraCaCombination(_M):
 
 class EutraSection(_M):
     accessStratumRelease: str
+    # Release inferred from version-suffixed field names in the decoded
+    # data (e.g. ``-r16``, ``-v1610``, ``-v1700``). Distinct from
+    # ``accessStratumRelease``: in NR ``accessStratumRelease`` is always
+    # ``"rel15"`` (TS 38.331 hasn't populated the spare slots), and in LTE
+    # it reflects baseline AS support which may lag actual feature support.
+    # ``None`` when no version-suffixed fields are present (typically a
+    # baseline-only message). Format: ``"relN"`` for N in 9..18+ — not
+    # constrained to the ``Release`` literal because suffix scanning may
+    # surface release numbers beyond v1's ``--release`` choices.
+    inferredRelease: str | None = None
     supportedBands: list[EutraBand]
     caCombinations: list[EutraCaCombination]
     unmapped: dict[str, Any] | None = Field(default=None, alias="_unmapped")
@@ -129,6 +139,12 @@ class NrBandCombination(_M):
 
 class NrSection(_M):
     accessStratumRelease: str
+    # See EutraSection.inferredRelease. Important for NR specifically:
+    # ``accessStratumRelease`` is always ``"rel15"`` (TS 38.331's
+    # ``AccessStratumRelease ::= ENUMERATED {rel15, spare7..1}``; no spares
+    # populated for rel16/17/18). ``inferredRelease`` is the practical
+    # answer for "what release of features is this UE reporting?".
+    inferredRelease: str | None = None
     supportedBands: list[NrBand]
     bandCombinations: list[NrBandCombination]
     unmapped: dict[str, Any] | None = Field(default=None, alias="_unmapped")
@@ -154,6 +170,8 @@ class MrdcBandCombination(_M):
 
 
 class MrdcSection(_M):
+    # MRDC has no ``accessStratumRelease`` field — see EutraSection.
+    inferredRelease: str | None = None
     bandCombinations: list[MrdcBandCombination]
     unmapped: dict[str, Any] | None = Field(default=None, alias="_unmapped")
 
