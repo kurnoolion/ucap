@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-Vendor = Literal["qcat", "shannon", "elt"]
+Vendor = Literal["qcat", "shannon", "elt", "wireshark"]
 Release = Literal["rel15", "rel16", "rel17", "rel18"]
 RatName = Literal["eutra", "nr", "mrdc"]
 

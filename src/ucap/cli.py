@@ -88,6 +88,14 @@ def _parse_log(log_file: Path, *, vendor: str, release: str):
             release=release,  # type: ignore[arg-type]
             source_file=log_file.name,
         )
+    if vendor == "wireshark":
+        from ucap.adapters.wireshark import parse_wireshark_to_canonical
+        return parse_wireshark_to_canonical(
+            log_file,
+            vendor="wireshark",
+            release=release,  # type: ignore[arg-type]
+            source_file=log_file.name,
+        )
     if vendor == "shannon":
         from ucap.adapters.shannon import parse_shannon_log
         return parse_shannon_log(log_file, release=release)

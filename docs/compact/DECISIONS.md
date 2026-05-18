@@ -813,3 +813,45 @@ Acyclic.
 - *Split `cli.py` into its own sub-package too (`src/ucap/cli/__init__.py`).* Rejected — `cli.py` is a single-file dispatcher; making it a sub-package adds zero contract value. Schema is the type-API surface — that's what earns the dedicated MODULE.md.
 - *Move schema higher in the tree (e.g. `src/schema/` as a sibling of `src/ucap/`).* Rejected — the canonical schema is part of ucap's identity (`from ucap.schema import CanonicalUeCapability` is the natural import); sibling placement would dilute the package boundary and break the "ucap is one Python package" mental model.
 - *Wait until development phase to do the reorg.* Rejected — the architecture-phase task is MODULE.md curation; resolving the cycle as part of that curation is the natural place to do it. Deferring would leave the cycle in MAP.md for the duration of architecture phase and bleed into development.
+
+---
+
+## D-020: Wireshark text-export adapter as a fourth vendor, reusing qcat ASN.1 L3 mappers via a dict bridge
+
+**Status**: Active
+**Date**: 2026-05-18
+**Context**: A user shared a `ueCapabilityInformation` log in Wireshark's *File → Export Packet Dissections → As Plain Text* format (root line `Radio Resource Control (RRC) protocol`, indented hierarchy with `Item N` entries, ENUMERATEDs as `name (N)`, BOOLEANs as `True`/`False`, OCTET STRINGs as hex possibly carrying a dissected child sub-tree, BIT STRINGs annotated with `[bit length N, ..., decimal value V]`). Wireshark's built-in `packet-lte-rrc` / `packet-nr-rrc` dissectors already PER-decode the inner per-RAT `ue-CapabilityRAT-Container` OCTET STRINGs, so the decoded fields appear directly as text children — no pycrate runtime decode is needed in this path. The user requested an adapter that produces the same canonical JSON as the QCAT path.
+
+**Decision**: Add `wireshark` as a fourth vendor (alongside `qcat`, `shannon`, `elt`) implemented as a new sub-package `src/ucap/adapters/wireshark/` with the same layered shape as `qcat/`:
+
+| Layer | File | Responsibility |
+|-------|------|----------------|
+| L1 | `_parser.py` | Tokenize Wireshark text → indented `WsTreeNode` tree (indent + 4 line shapes: summary node / field-with-value / BIT STRING annotated / per-bit decomposed child). |
+| L2 | `_dict.py` | Convert tree → pycrate-equivalent Python values (ENUMERATED→str, INTEGER→int, BOOLEAN→bool, SEQUENCE→dict, SEQUENCE OF→list, OCTET STRING→bytes, BIT STRING→`(value, length)` tuple, CHOICE→`(tag, sub)` tuple). Plus envelope walker `extract_rat_containers()` returning `list[(rat_type, decoded_dict)]`. |
+| L3 | (reuse) | The decoded dicts are pycrate-shape-compatible, so the existing `_map_eutra_from_dict` / `_map_nr_from_dict` / `_map_mrdc_from_dict` and the two-pass MRDC dispatcher from `qcat/_asn1.py` are reused unchanged. A new private helper `_dispatch_decoded_pairs()` was factored out of `map_asn1_message_to_canonical` to expose the L3 dispatch as a callable taking already-decoded pairs; the QCAT ASN.1 path is unchanged. |
+
+`Vendor = Literal["qcat", "shannon", "elt", "wireshark"]`. `PREFIX_REGISTRY` adds `"WSH": "wireshark"`. New error code `WSH-E001` (envelope-shape failure). `CLI-E002` valid-vendor list updated.
+
+**Why**:
+- **No L2 (PER) work** is needed for Wireshark — that's the structural win. The decoded fields are already present in the text. The whole pycrate dependency does not gate this adapter; it remains required only for the QCAT ASN.1 path.
+- **Dict-bridge reuse** keeps the canonical mapping logic in one place. EUTRA / NR / MRDC field-name interpretation, feature-set indirection, BCS bitmap handling, combo labelling — all single-sourced through `qcat/_asn1.py`. The cost is a strict contract: the L2 converter must produce *exactly* pycrate-shaped values. Validated by 19 unit tests across the value-type and envelope-walker shapes plus an end-to-end test using a synthetic full Wireshark envelope.
+- **Sub-package layout** mirrors `qcat/` per `[D-018]`. Symmetry makes onboarding new adapters straightforward and keeps `adapters/MODULE.md`'s umbrella role meaningful.
+- **Vendor multiplication is cheap** because the canonical schema is the source-agnostic boundary (`NFR-9`). Adding `wireshark` doesn't widen the canonical JSON surface — every Wireshark output is byte-for-byte indistinguishable from a QCAT output of the same UE.
+- **No format auto-detection between vendors** — `--vendor wireshark` is explicit. The QCAT dispatcher already does intra-vendor format detection (ASN.1 vs indented per `FR-21`); adding cross-vendor sniffing would conflate vendor identity with format and complicate diagnostics attribution.
+
+**Consequences**:
+- **Public API additions**: `from ucap.adapters.wireshark import parse_wireshark_to_canonical, parse_wireshark_text, parse_wireshark_file, WsTreeNode, WiresharkEnvelopeError`.
+- **`map_asn1_message_to_canonical` refactor in `qcat/_asn1.py`** — extracted the L3 dispatch loop into `_dispatch_decoded_pairs(decoded_pairs) -> (rats_present, eutra, nr, mrdc)`. The QCAT ASN.1 path is now PER-decode → call helper → build Meta; behavior unchanged, all existing tests pass.
+- **`requirements.md`** — `FR-8` updated: Shannon and ELT remain stubs; Wireshark is implemented. The implicit assumption "v1 = QCAT only" is amended.
+- **`adapters/MODULE.md`** — to be updated by `regen-map` plus a curated note about `wireshark/` (umbrella section gains a `wireshark` entry alongside `qcat`).
+- **Diagnostics surface**: one new error code `WSH-E001` for envelope-shape failures. PDCP/RLC BIT-STRING decomposition shape difference (Wireshark emits dict-of-bools; pycrate emits `(int, length)`) is tolerated because the L3 mappers only read fields surfaced into the canonical schema, and the only canonical-surfaced BIT STRING (`supportedBandwidthCombinationSet`) is always emitted by Wireshark with the `[bit length N, ..., decimal value V]` annotation — handled exactly as pycrate's `(value, length)` tuple.
+- **Sample coverage gap acknowledged**: the user's first Wireshark sample is partial NR only. EUTRA and MRDC paths are exercised by synthetic-envelope tests; real-sample fixtures for those will follow.
+- **License impact**: none — no new third-party runtime dependency. Wireshark itself is GPL-2.0+, but ucap only consumes its *text output*, not its code.
+
+**Alternatives considered**:
+- *Add a wireshark adapter that re-encodes the decoded fields back to PER and re-decodes via pycrate.* Rejected — wasteful; loses information at the re-encode step if any Wireshark field doesn't round-trip cleanly; introduces a hard dependency on pycrate for a path that doesn't need it.
+- *Fold Wireshark into the qcat dispatcher as a third intra-vendor format.* Rejected — misleading attribution (the source tool is Wireshark, not QCAT); complicates the diagnostics prefix story; harder to evolve independently as Wireshark dissector output drifts.
+- *Build a direct tree → CanonicalUeCapability mapper, bypassing pycrate-shape entirely.* Rejected — forks the canonical-mapping logic. Schema evolution would have to be applied in two places.
+- *Defer until full EUTRA + MRDC Wireshark samples are in hand.* Rejected — the NR path is end-to-end testable on the user's existing sample (envelope shape verified). Phased rollout matches the project's incremental-merge cadence; samples for EUTRA / MRDC arrive and tests extend naturally.
+
+**Reversibility**: High. Removing Wireshark requires deleting `src/ucap/adapters/wireshark/`, removing the CLI branch, restoring `Vendor` literal, removing `WSH` from `PREFIX_REGISTRY`, removing `WSH-E001`, and reverting the small `_dispatch_decoded_pairs` factor-out (the helper is harmless if left). The QCAT path is structurally unaffected.

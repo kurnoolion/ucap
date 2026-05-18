@@ -56,6 +56,7 @@ PREFIX_REGISTRY: dict[str, str] = {
     "QCT": "qcat",
     "SHN": "shannon",
     "ELT": "elt",
+    "WSH": "wireshark",
     "DGN": "diagnostics",
     "CLI": "cli",
 }
@@ -132,6 +133,12 @@ ERROR_CODES: dict[str, ErrorCode] = {
         "ELT adapter not implemented — sample log needed",
         ErrorSeverity.ERROR,
     ),
+    # Wireshark adapter
+    "WSH-E001": ErrorCode(
+        "WSH-E001",
+        "Wireshark envelope error at line {line}: {detail}",
+        ErrorSeverity.ERROR,
+    ),
     # CLI dispatcher
     "CLI-E001": ErrorCode(
         "CLI-E001",
@@ -140,7 +147,7 @@ ERROR_CODES: dict[str, ErrorCode] = {
     ),
     "CLI-E002": ErrorCode(
         "CLI-E002",
-        "Unsupported vendor '{vendor}' (valid: qcat, shannon, elt)",
+        "Unsupported vendor '{vendor}' (valid: qcat, shannon, elt, wireshark)",
         ErrorSeverity.ERROR,
     ),
 }

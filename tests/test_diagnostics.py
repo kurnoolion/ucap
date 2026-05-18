@@ -57,13 +57,14 @@ def test_prefix_registry_shape() -> None:
 
 
 def test_prefix_registry_v1_content() -> None:
-    """v1 PREFIX_REGISTRY pins the five prefixes from D-009 A2."""
+    """v1 PREFIX_REGISTRY: original five from D-009 A2 plus WSH (D-020)."""
     from ucap.diagnostics import PREFIX_REGISTRY
 
     assert PREFIX_REGISTRY == {
         "QCT": "qcat",
         "SHN": "shannon",
         "ELT": "elt",
+        "WSH": "wireshark",
         "DGN": "diagnostics",
         "CLI": "cli",
     }
@@ -104,12 +105,13 @@ def test_error_codes_severity_matches_letter() -> None:
 
 
 def test_error_codes_v1_count() -> None:
-    """v1 ERROR_CODES has exactly the 14 codes locked in D-011 + D-012 + D-019."""
+    """v1 ERROR_CODES: 14 from D-011+D-012+D-019, plus WSH-E001 from D-020."""
     from ucap.diagnostics import ERROR_CODES
 
-    assert len(ERROR_CODES) == 14, (
-        f"Expected 14 codes (D-011's initial 11 + DGN-E004 from D-012 + "
-        f"QCT-E003 + QCT-E004 from D-019); got {len(ERROR_CODES)}"
+    assert len(ERROR_CODES) == 15, (
+        f"Expected 15 codes (D-011's initial 11 + DGN-E004 from D-012 + "
+        f"QCT-E003 + QCT-E004 from D-019 + WSH-E001 from D-020); "
+        f"got {len(ERROR_CODES)}"
     )
 
 

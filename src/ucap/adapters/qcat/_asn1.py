@@ -625,40 +625,12 @@ def map_asn1_message_to_canonical(
     v1 first pass implements **EUTRA only**. NR and MRDC paths raise
     ``NotImplementedError`` and are tracked as follow-on work under task #17.
     """
-    rats_present: list[RatName] = []
-    eutra: EutraSection | None = None
-    nr: NrSection | None = None
-    mrdc: MrdcSection | None = None
-
-    # Two-pass dispatch: pass 1 decodes everything + collects the NR per-CC
-    # tables (MRDC's mapper reuses them per D-015 / D-018 — the MRDC container
-    # has its own featureSetCombinations but no per-CC tables; those live with
-    # ue-NR-Capability). Pass 2 dispatches each decoded container to its
-    # canonical mapper with the per-CC tables available.
     decoded_pairs: list[tuple[str, dict]] = []
-    nr_per_cc = _NrPerCcTablesDict()
     for container in msg.rat_containers:
         decoded = decode_rat_container(container)  # raises _PerDecodeError
         decoded_pairs.append((container.rat_type, decoded))
-        if container.rat_type == "nr" and not nr_per_cc.downlink and not nr_per_cc.uplink:
-            # First NR container's tables become the shared reference.
-            nr_per_cc = _collect_nr_per_cc_tables_dict(decoded)
 
-    for rat, decoded in decoded_pairs:
-        if rat == "eutra":
-            if eutra is None:
-                eutra = _map_eutra_from_dict(decoded)
-                rats_present.append("eutra")
-        elif rat == "nr":
-            if nr is None:
-                nr = _map_nr_from_dict(decoded)
-                rats_present.append("nr")
-        elif rat in ("eutra-nr", "mrdc-XPDCP"):
-            if mrdc is None:
-                mrdc = _map_mrdc_from_dict(decoded, nr_per_cc=nr_per_cc)
-                rats_present.append("mrdc")
-        else:
-            raise ValueError(f"Unsupported rat-Type {rat!r} in ASN.1 message")
+    rats_present, eutra, nr, mrdc = _dispatch_decoded_pairs(decoded_pairs)
 
     meta = Meta(
         vendor=vendor,
@@ -676,6 +648,52 @@ def map_asn1_message_to_canonical(
         nr=nr,
         mrdc=mrdc,
     )
+
+
+def _dispatch_decoded_pairs(
+    decoded_pairs: list[tuple[str, dict]],
+) -> tuple[list[RatName], EutraSection | None, NrSection | None, MrdcSection | None]:
+    """Two-pass L3 dispatch over already-decoded ``(rat_type, dict)`` pairs.
+
+    Shared by the QCAT ASN.1 adapter (after L2 PER decode) and the Wireshark
+    adapter (which gets pre-decoded dicts from Wireshark's own dissector and
+    therefore skips L2 entirely).
+
+    Pass 1: collect NR per-CC tables from the first NR container — MRDC reuses
+    them per ``D-015`` / ``D-018``.
+
+    Pass 2: each container is mapped to its canonical section. Each RAT lane
+    is populated at most once; later duplicates are silently skipped.
+
+    Raises ``ValueError`` for an unsupported ``rat_type``.
+    """
+    rats_present: list[RatName] = []
+    eutra: EutraSection | None = None
+    nr: NrSection | None = None
+    mrdc: MrdcSection | None = None
+
+    nr_per_cc = _NrPerCcTablesDict()
+    for rat_type, decoded in decoded_pairs:
+        if rat_type == "nr" and not nr_per_cc.downlink and not nr_per_cc.uplink:
+            nr_per_cc = _collect_nr_per_cc_tables_dict(decoded)
+
+    for rat, decoded in decoded_pairs:
+        if rat == "eutra":
+            if eutra is None:
+                eutra = _map_eutra_from_dict(decoded)
+                rats_present.append("eutra")
+        elif rat == "nr":
+            if nr is None:
+                nr = _map_nr_from_dict(decoded)
+                rats_present.append("nr")
+        elif rat in ("eutra-nr", "mrdc-XPDCP"):
+            if mrdc is None:
+                mrdc = _map_mrdc_from_dict(decoded, nr_per_cc=nr_per_cc)
+                rats_present.append("mrdc")
+        else:
+            raise ValueError(f"Unsupported rat-Type {rat!r}")
+
+    return rats_present, eutra, nr, mrdc
 
 
 # ─── L3: per-RAT mappers ────────────────────────────────────────────
