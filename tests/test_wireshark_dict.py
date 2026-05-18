@@ -347,6 +347,67 @@ def test_extract_error_message_shows_actual_children():
     assert "some-other-field" in msg
 
 
+def test_extract_handles_lte_rrc_field_spelling():
+    """User report: a real Wireshark export had the inner OCTET STRING field
+    spelled ``ueCapabilityRAT-Container`` (camelCase, no first hyphen) —
+    that's the TS 36.331 LTE-RRC spelling. NR-RRC uses
+    ``ue-CapabilityRAT-Container`` (with hyphen). The walker must accept
+    both.
+    """
+    text = (
+        "Radio Resource Control (RRC) protocol\n"
+        "  UL-DCCH-Message\n"
+        "    message: c1 (0)\n"
+        "      c1: ueCapabilityInformation (9)\n"
+        "        ueCapabilityInformation\n"
+        "          rrc-TransactionIdentifier: 0\n"
+        "          criticalExtensions: ueCapabilityInformation (0)\n"
+        "            ueCapabilityInformation\n"
+        "              ue-CapabilityRAT-ContainerList: 1 item\n"
+        "                Item 0\n"
+        "                  UE-CapabilityRAT-Container\n"
+        "                    rat-Type: eutra-nr (6)\n"
+        # LTE-RRC spelling: no hyphen between ue and Capability.
+        "                    ueCapabilityRAT-Container [FC*]: aa\n"
+        "                      UE-MRDC-Capability\n"
+        "                        rf-ParametersMRDC\n"
+    )
+    pairs = extract_rat_containers(parse_wireshark_text(text))
+    assert len(pairs) == 1
+    rat, decoded = pairs[0]
+    assert rat == "eutra-nr"
+    assert "rf-ParametersMRDC" in decoded
+
+
+def test_extract_handles_nested_inner_field_deeper_than_rat_type():
+    """User's real-file dump showed the inner OCTET STRING field as a
+    grand-child of ``rat-Type`` (deeper indent than expected). The walker's
+    DFS finds it regardless of depth — as long as it's not inside the
+    decoded ``UE-*-Capability`` blob.
+    """
+    text = (
+        "Radio Resource Control (RRC) protocol\n"
+        "  UL-DCCH-Message\n"
+        "    message: c1 (0)\n"
+        "      c1: ueCapabilityInformation (9)\n"
+        "        ueCapabilityInformation\n"
+        "          rrc-TransactionIdentifier: 0\n"
+        "          criticalExtensions: ueCapabilityInformation (0)\n"
+        "            ueCapabilityInformation\n"
+        "              ue-CapabilityRAT-ContainerList: 1 item\n"
+        "                Item 0\n"
+        "                  UE-CapabilityRAT-Container\n"
+        "                    rat-Type: eutra-nr (6)\n"
+        # Deeper indent than rat-Type — picked up by DFS, not direct lookup.
+        "                      ueCapabilityRAT-Container [FC*]: aa\n"
+        "                        UE-MRDC-Capability\n"
+        "                          rf-ParametersMRDC\n"
+    )
+    pairs = extract_rat_containers(parse_wireshark_text(text))
+    assert len(pairs) == 1
+    assert pairs[0][0] == "eutra-nr"
+
+
 def test_extract_handles_non_fc_bracketed_annotation():
     """The user reported an envelope error where the ``[FC*]`` marker in their
     real Wireshark export was actually some non-ASCII / Unicode glyph (an

@@ -237,16 +237,17 @@ def extract_rat_containers(tree: WsTreeNode) -> list[tuple[str, dict]]:
             )
         rat_type = _strip_enum_index(rat_type_node.value)
 
-        inner = _find_descendant_outside_inner(item, "ue-CapabilityRAT-Container")
+        inner = _find_descendant_outside_inner(item, _INNER_FIELD_NAMES)
         if inner is None:
             raise WiresharkEnvelopeError(
                 f"{item.name} at source line {item.line}: missing inner "
-                f"ue-CapabilityRAT-Container OCTET STRING field. Subtree "
-                f"shape:\n{_dump_subtree(item, max_depth=3)}\n"
-                f"(Expected Wireshark to emit `ue-CapabilityRAT-Container "
-                f"[FC*]: <hex>` with a dissected `UE-*-Capability` child "
-                f"beneath it. A bracketed Wireshark annotation in the field "
-                f"name is now stripped regardless of content.)",
+                f"OCTET STRING field — tried both 3GPP spellings: "
+                f"{_INNER_FIELD_NAMES!r}. Subtree shape:\n"
+                f"{_dump_subtree(item, max_depth=4)}\n"
+                f"(Expected Wireshark to emit `<inner-field> [FC*]: <hex>` "
+                f"with a dissected `UE-*-Capability` child beneath it. A "
+                f"bracketed Wireshark annotation in the field name is "
+                f"stripped regardless of content.)",
                 line=item.line,
             )
         if not inner.children:
@@ -307,16 +308,32 @@ def _find_child(node: WsTreeNode, name: str) -> WsTreeNode | None:
 _INNER_BLOB_NAME = re.compile(r"^UE-[A-Za-z0-9]+-Capability$")
 
 
+# The OCTET STRING that carries the inner per-RAT capability blob is named
+# differently in TS 36.331 (LTE-RRC) vs TS 38.331 (NR-RRC):
+#   - NR-RRC: ``ue-CapabilityRAT-Container`` (with hyphen between ue and
+#     Capability)
+#   - LTE-RRC: ``ueCapabilityRAT-Container`` (no first hyphen)
+# Wireshark uses whichever spelling matches the dissector that processed
+# the parent PDU — an MRDC capability sent via LTE signalling appears with
+# the LTE spelling, even though the inner content is a UE-MRDC-Capability.
+# The ContainerList field name is the same in both specs
+# (``ue-CapabilityRAT-ContainerList``).
+_INNER_FIELD_NAMES = ("ue-CapabilityRAT-Container", "ueCapabilityRAT-Container")
+
+
 def _find_descendant_outside_inner(
-    node: WsTreeNode, name: str
+    node: WsTreeNode, names: str | tuple[str, ...]
 ) -> WsTreeNode | None:
-    """DFS within ``node``'s subtree for a node matching ``name``, but stop
-    descending into the decoded inner ``UE-*-Capability`` blobs — we must not
-    find the same field name *inside* the decoded content.
+    """DFS within ``node``'s subtree for a node whose name matches ``names``
+    (string or tuple of acceptable names), but stop descending into the
+    decoded inner ``UE-*-Capability`` blobs — we must not find the same
+    field name *inside* the decoded content.
 
     Used by :func:`extract_rat_containers` to tolerate Wireshark trees that
     do or do not include a ``UE-CapabilityRAT-Container`` SEQUENCE wrapper
-    between the ``Item N`` node and the ``rat-Type`` / inner field lines.
+    between the ``Item N`` node and the ``rat-Type`` / inner field lines,
+    and to accept both 3GPP RRC spelling conventions for the inner field
+    (see :data:`_INNER_FIELD_NAMES`).
 
     The stop boundary is the regex ``^UE-[A-Za-z0-9]+-Capability$`` —
     matching ``UE-NR-Capability``, ``UE-EUTRA-Capability``,
@@ -324,13 +341,17 @@ def _find_descendant_outside_inner(
     SEQUENCE-type wrapper ``UE-CapabilityRAT-Container`` does NOT match
     (it doesn't end in ``-Capability``), so the walker descends through it.
     """
+    if isinstance(names, str):
+        targets: tuple[str, ...] = (names,)
+    else:
+        targets = names
     for c in node.children:
-        if c.name == name:
+        if c.name in targets:
             return c
         if _INNER_BLOB_NAME.match(c.name):
             # Decoded inner content — don't descend.
             continue
-        r = _find_descendant_outside_inner(c, name)
+        r = _find_descendant_outside_inner(c, names)
         if r is not None:
             return r
     return None
