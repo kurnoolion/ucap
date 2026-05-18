@@ -227,6 +227,145 @@ def test_long_hex_value_preserved():
 # ─── Real-sample smoke test ─────────────────────────────────────────
 
 
+# ─── Preamble stripping (outer-protocol nesting) ────────────────────
+
+
+def test_preamble_with_outer_protocol_layers_stripped():
+    """Wireshark export from S1AP-carried RRC nests the PDU inside outer
+    layers. Preamble lines must be skipped; the RRC tree re-baselined.
+    """
+    text = (
+        "Frame 12: 234 bytes on wire\n"
+        "    Encapsulation type: Ethernet (1)\n"
+        "Ethernet II, Src: aa:bb, Dst: cc:dd\n"
+        "    Destination: cc:dd\n"
+        "Internet Protocol Version 4, Src: 10.0.0.1, Dst: 10.0.0.2\n"
+        "    Version: 4\n"
+        "Stream Control Transmission Protocol\n"
+        "S1 Application Protocol\n"
+        "    initiatingMessage\n"
+        "        procedureCode: id-uplinkNASTransport (13)\n"
+        "        Radio Resource Control (RRC) protocol\n"
+        "            UL-DCCH-Message\n"
+        "                message: c1 (0)\n"
+        "                    c1: ueCapabilityInformation (9)\n"
+    )
+    tree = parse_wireshark_text(text)
+    # After stripping, the RRC root is the only top-level child.
+    rrc_subtrees = [
+        c for c in tree.children
+        if c.name == "Radio Resource Control (RRC) protocol"
+    ]
+    assert len(rrc_subtrees) == 1
+    ul = rrc_subtrees[0].children[0]
+    assert ul.name == "UL-DCCH-Message"
+    message = ul.children[0]
+    assert message.name == "message"
+    assert message.value == "c1 (0)"
+
+
+def test_preamble_falls_back_to_ul_dcch_when_rrc_root_missing():
+    """Some exports drop the ``Radio Resource Control (RRC) protocol`` summary
+    line. The skipper still finds ``UL-DCCH-Message`` as a fallback entry.
+    """
+    text = (
+        "Frame 1\n"
+        "    Encapsulation: x\n"
+        "Outer Protocol\n"
+        "    UL-DCCH-Message\n"
+        "        message: c1 (0)\n"
+    )
+    tree = parse_wireshark_text(text)
+    ul_subtrees = [c for c in tree.children if c.name == "UL-DCCH-Message"]
+    assert len(ul_subtrees) == 1
+    assert ul_subtrees[0].children[0].name == "message"
+
+
+def test_preamble_skipper_preserves_original_line_numbers():
+    """Line numbers in the resulting tree must point at the user's original
+    file lines — important for diagnostic error messages.
+    """
+    text = (
+        "Frame 12\n"            # line 1
+        "    Encap: x\n"        # line 2
+        "Outer\n"               # line 3
+        "    Radio Resource Control (RRC) protocol\n"  # line 4
+        "        UL-DCCH-Message\n"                     # line 5
+        "            message: c1 (0)\n"                 # line 6
+    )
+    tree = parse_wireshark_text(text)
+    rrc = tree.children[0]
+    assert rrc.name == "Radio Resource Control (RRC) protocol"
+    assert rrc.line == 4  # original line number, not 1
+    ul = rrc.children[0]
+    assert ul.line == 5
+    msg = ul.children[0]
+    assert msg.line == 6
+
+
+def test_preamble_skipper_no_op_when_rrc_at_top():
+    """File that already starts with the RRC root: behavior unchanged."""
+    text = (
+        "Radio Resource Control (RRC) protocol\n"
+        "  UL-DCCH-Message\n"
+        "    message: c1 (0)\n"
+    )
+    tree = parse_wireshark_text(text)
+    assert tree.children[0].name == "Radio Resource Control (RRC) protocol"
+    assert tree.children[0].line == 1
+
+
+def test_preamble_skipper_stops_at_outer_protocol_return():
+    """If a later line dedents below the RRC baseline, we stop processing
+    the RRC body — that line is a return to the outer protocol.
+    """
+    text = (
+        "Frame 12\n"
+        "    Radio Resource Control (RRC) protocol\n"
+        "        UL-DCCH-Message\n"
+        "            message: c1 (0)\n"
+        # Back to outer protocol — sibling of "Radio Resource Control..."
+        "    [Frame is complete]\n"
+        "Frame 13\n"
+        "    Some other content\n"
+    )
+    tree = parse_wireshark_text(text)
+    rrc_subtrees = [
+        c for c in tree.children
+        if c.name == "Radio Resource Control (RRC) protocol"
+    ]
+    assert len(rrc_subtrees) == 1
+    # The "[Frame is complete]" line and Frame 13 should not appear as
+    # children of the RRC tree.
+    rrc = rrc_subtrees[0]
+    names_in_tree = []
+    def _collect(n):
+        names_in_tree.append(n.name)
+        for c in n.children:
+            _collect(c)
+    _collect(rrc)
+    assert "[Frame is complete]" not in names_in_tree
+    assert "Frame 13" not in names_in_tree
+
+
+def test_preamble_skipper_with_no_rrc_returns_unchanged():
+    """A file with no RRC entry-point at all is left as-is for the existing
+    error path to surface.
+    """
+    text = (
+        "Frame 12\n"
+        "    Encapsulation: x\n"
+        "Some Other Protocol\n"
+        "    fieldA: 1\n"
+    )
+    tree = parse_wireshark_text(text)
+    # Whatever the existing parser did before the skipper was added, it
+    # still does — no Radio Resource Control or UL-DCCH-Message subtree.
+    names = [c.name for c in tree.children]
+    assert "Frame 12" in names
+    assert "Some Other Protocol" in names
+
+
 @pytest.mark.skipif(
     not (SCAN_DIR / "uecap-modem-2.txt").exists(),
     reason="real Wireshark sample (~/work/scan/uecap-modem-2.txt) not present",

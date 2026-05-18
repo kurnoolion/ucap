@@ -126,7 +126,14 @@ def parse_wireshark_text(text: str) -> WsTreeNode:
     Returns a synthetic ``"<root>"`` node whose children are the top-level
     lines from the input. For a typical single-PDU export this means one
     child: the ``"Radio Resource Control (RRC) protocol"`` node.
+
+    Outer-protocol preamble (Frame / Ethernet / IP / S1AP / NGAP / F1AP /
+    etc.) is stripped before tokenizing — see :func:`_normalize_preamble`.
+    Original source-line numbers are preserved so error messages and
+    ``WsTreeNode.line`` continue to point at the right spot in the user's
+    file regardless of how deeply the RRC PDU was nested.
     """
+    text = _normalize_preamble(text)
     root = _NodeBuilder(
         name="<root>", value=None, bit_info=None, line=0, indent=-1
     )
@@ -165,6 +172,90 @@ def parse_wireshark_text(text: str) -> WsTreeNode:
 def parse_wireshark_file(path: str | Path) -> WsTreeNode:
     """Read a file from disk and parse it via :func:`parse_wireshark_text`."""
     return parse_wireshark_text(Path(path).read_text())
+
+
+# ─── Preamble normalisation ─────────────────────────────────────────
+
+
+_RRC_ROOT = "Radio Resource Control (RRC) protocol"
+_UL_DCCH = "UL-DCCH-Message"
+
+
+def _normalize_preamble(text: str) -> str:
+    """Strip outer-protocol preamble and re-baseline indent so the RRC PDU
+    starts at column 0.
+
+    Wireshark's text export may nest the RRC PDU inside outer protocols when
+    captured from S1AP / X2AP / NGAP / F1AP traffic. The preamble's
+    outer-protocol fields (Frame, Ethernet, IP, SCTP, S1AP, …) shift the
+    indent baseline and are noise for UE-capability analysis. This
+    preprocessor:
+
+    1. Locates the first line whose stripped content is
+       ``"Radio Resource Control (RRC) protocol"``. If that's missing
+       (some exports drop the protocol-tree summary line), falls back to
+       the first ``"UL-DCCH-Message"`` line.
+    2. Replaces all lines *before* the match with blank lines (preserving
+       original line numbers — important for diagnostic line references).
+    3. Re-baselines each subsequent line's indent so the matched line is at
+       column 0, stopping at the first line whose indent goes *below* the
+       baseline (signalling we've returned to an outer-protocol sibling).
+
+    If the file already starts with the RRC root, the function is a no-op
+    (backward compat with samples that have no outer-protocol preamble).
+    """
+    lines = text.splitlines()
+    # Locate the first non-blank line.
+    first_real = next((ln for ln in lines if ln.strip()), None)
+    if first_real is None or first_real.strip() == _RRC_ROOT:
+        return text
+
+    # Search for the RRC PDU's entry-point line. Prefer the protocol-tree
+    # summary; fall back to UL-DCCH-Message if that's missing.
+    target_idx: int | None = None
+    for i, ln in enumerate(lines):
+        if ln.strip() == _RRC_ROOT:
+            target_idx = i
+            break
+    if target_idx is None:
+        for i, ln in enumerate(lines):
+            if ln.strip() == _UL_DCCH:
+                target_idx = i
+                break
+    if target_idx is None:
+        # No RRC entry-point at all; let the existing parser produce its
+        # own (clearer-now-than-here) error.
+        return text
+
+    target_line = lines[target_idx]
+    baseline = len(target_line) - len(target_line.lstrip(" "))
+
+    # Build output line-for-line, preserving original line indices so
+    # WsTreeNode.line still points into the user's original file.
+    out: list[str] = []
+    # Pad with blank lines for everything before the target.
+    out.extend([""] * target_idx)
+    in_outer_return = False
+    for ln in lines[target_idx:]:
+        if in_outer_return:
+            out.append("")
+            continue
+        if not ln.strip():
+            out.append("")
+            continue
+        indent = len(ln) - len(ln.lstrip(" "))
+        if indent < baseline:
+            # Returned to an outer-protocol sibling/ancestor — drop the
+            # rest of the segment (but keep blank padding so subsequent
+            # original-line references still resolve).
+            out.append("")
+            in_outer_return = True
+            continue
+        out.append(ln[baseline:])
+
+    # Preserve the original trailing-newline state.
+    trailer = "\n" if text.endswith("\n") else ""
+    return "\n".join(out) + trailer
 
 
 # ─── Line-level helpers ─────────────────────────────────────────────
