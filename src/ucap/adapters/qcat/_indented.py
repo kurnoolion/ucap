@@ -297,10 +297,20 @@ def _map_eutra(rat_container: TreeNode) -> EutraSection:
     if rf is not None:
         sbl = rf.get("supportedBandListEUTRA")
         if sbl is not None:
-            for item in sbl.list_items():
+            # FR-26: index-parallel supportedBandListEUTRA-v9e0 overlay — its
+            # bandEUTRA-v9e0 overrides the base bandEUTRA (64 placeholder) for
+            # bands above 64.
+            v9e0_node = _find_first(ue_eutra, "supportedBandListEUTRA-v9e0")
+            v9e0_items = v9e0_node.list_items() if v9e0_node is not None else []
+            for i, item in enumerate(sbl.list_items()):
                 b = _get_int(item, "bandEUTRA")
-                if b is not None:
-                    bands.append(EutraBand(band=b, halfDuplex=_get_bool(item, "halfDuplex")))
+                if b is None:
+                    continue
+                if i < len(v9e0_items):
+                    override = _get_int(v9e0_items[i], "bandEUTRA-v9e0")
+                    if override is not None:
+                        b = override
+                bands.append(EutraBand(band=b, halfDuplex=_get_bool(item, "halfDuplex")))
 
     combos: list[EutraCaCombination] = []
     # Rel-10 main list — combo is a direct SEQUENCE OF BandParameters-r10

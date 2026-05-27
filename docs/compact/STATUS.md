@@ -1,7 +1,7 @@
 # Status
 
 **Active phase**: development
-**Last updated**: 2026-05-18
+**Last updated**: 2026-05-27
 
 ## Done
 

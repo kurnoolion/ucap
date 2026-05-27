@@ -1,6 +1,6 @@
 # Requirements
 
-Last updated: 2026-05-14. Behavioral specs only — project identity and scope live in `PROJECT.md`.
+Last updated: 2026-05-27. Behavioral specs only — project identity and scope live in `PROJECT.md`.
 
 <!--
 How to use this file:
@@ -43,6 +43,11 @@ How to use this file:
 - ~~**FR-23** — ucap bundles 3GPP RRC ASN.1 schemas for Rel-15, Rel-16, Rel-17, and Rel-18 (TS 36.331 + TS 38.331) under `src/ucap/schemas/<release>/`. The `--release` flag selects which release's schema is used for PER decoding. Mismatched release between input and selected schema surfaces as a `QCT-E002` canonical-validation failure with the `{validation_failure}` enum extended to include `per_decode_failed`.~~ *(superseded 2026-05-14 by FR-25 via `D-019` — pycrate provides schemas; no ucap-internal bundle.)*
 - **FR-24** — For ASN.1 value-notation input, ucap PER-decodes the per-RAT `ue-CapabilityRAT-Container` OCTET STRING against the appropriate 3GPP RRC schema using **pycrate**'s precompiled ASN.1 modules: TS 36.331 (`pycrate_asn1dir.RRCLTE.EUTRA_RRC_Definitions.UE_EUTRA_Capability`) for `rat-Type eutra`; TS 38.331 (`pycrate_asn1dir.RRCNR.NR_RRC_Definitions.UE_NR_Capability` and `.UE_MRDC_Capability`) for `rat-Type nr` and `eutra-nr` respectively. *(Anchors `D-019`.)*
 - **FR-25** — Schemas are provided by the `pycrate` PyPI dependency (single version per spec — currently TS 36.331 + TS 38.331 v17.4.0, both Rel-17). ucap does **not** bundle a separate per-release `.asn` artifact in v1. The `--release` flag (`rel15` / `rel16` / `rel17` / `rel18`) is accepted as metadata and recorded in `_meta.release`; PER decoding always uses pycrate's bundled schema. Rel-15/Rel-16 input decodes correctly because 3GPP RRC extensions are additive; Rel-18 input may surface `QCT-E004` (PER decode failure) for Rel-18-specific IEs. *(Anchors `D-019`; constraint documented for clarity.)*
+
+*FR-26 and FR-27 extend EUTRA parsing (FR-2) for real-log coverage surfaced 2026-05-27 by a QCAT ASN.1 EUTRA export and a Wireshark export. See the pending decision in STATUS Flags / `DECISIONS.md`.*
+
+- **FR-26** — For EUTRA messages, ucap applies the `supportedBandListEUTRA-v9e0` overlay: each entry's `bandEUTRA-v9e0` (when present) overrides the index-aligned base `supportedBandListEUTRA` entry's `bandEUTRA`, which 3GPP pins to the `64` placeholder for bands above 64. Without the overlay, bands 65–256 are mis-reported as 64. Applies wherever EUTRA supported bands are extracted — the shared dict mapper (QCAT ASN.1 + Wireshark paths) and the indented-tree mapper. *(Extends FR-2; anchors the 2026-05-27 EUTRA-coverage decision.)*
+- **FR-27** — For EUTRA messages whose CA combinations are carried in `supportedBandCombinationReduced-r13` (Rel-13 reduced combo list), ucap extracts them into `EutraCaCombination` records with `source="reducedR13"`, mapping each `bandParameterList-r13` entry (`bandEUTRA-r13`, `ca-BandwidthClassDL-r13` / `ca-BandwidthClassUL-r10`, `supportedMIMO-CapabilityDL-r13` / `supportedMIMO-CapabilityUL-r10`) and the inline `supportedBandwidthCombinationSet-r13` BCS bitmap. *(Extends FR-2's combo-source set; anchors the 2026-05-27 EUTRA-coverage decision.)*
 
 ## Non-functional
 

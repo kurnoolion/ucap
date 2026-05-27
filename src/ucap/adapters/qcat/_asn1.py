@@ -791,59 +791,80 @@ def _flatten_extensions(decoded: dict) -> dict:
 def _map_eutra_from_dict(decoded: dict) -> EutraSection:
     """Map a pycrate-decoded ``UE-EUTRA-Capability`` dict to an :class:`EutraSection`.
 
-    v1 first-pass coverage:
+    Coverage:
 
     - ``accessStratumRelease`` from the base SEQUENCE.
-    - ``supportedBands`` from ``rf-Parameters.supportedBandListEUTRA`` (one
-      :class:`EutraBand` per entry; ``halfDuplex`` flag preserved when present).
-    - ``caCombinations`` from ``rf-Parameters-v1020.supportedBandCombination-r10``
-      under the flattened extension chain. Source tagged ``"main"``. One
-      :class:`EutraCaCombination` per entry; ``bands`` populated with one
-      :class:`EutraComboBandEntry` per ``bandList`` element.
+    - ``supportedBands`` from ``supportedBandListEUTRA`` with the
+      ``supportedBandListEUTRA-v9e0`` band-number overlay applied (``FR-26``):
+      bands above 64 carry their true value from ``bandEUTRA-v9e0`` rather than
+      the placeholder 64.
+    - ``caCombinations`` merged from three sources, ``combinationId`` contiguous:
+      ``supportedBandCombination-r10`` (``"main"``, BCS from the index-parallel
+      ``supportedBandCombinationExt-r10``), ``supportedBandCombinationAdd-r11``
+      (``"addR11"``, inline BCS — ``FR-2`` parity), and
+      ``supportedBandCombinationReduced-r13`` (``"reducedR13"``, inline BCS —
+      ``FR-27``).
 
-    **Deferred (FR-15..FR-18, anchored in qcat/MODULE.md Deferred)**:
-      - ``supportedBandCombinationAdd-r11`` merge
-      - BCS bitmaps from ``supportedBandCombinationExt-r10``
-      - Extension flag merges (256QAM-DL / 64QAM-UL / 1024QAM-DL) from
-        ``-v1090`` / ``-v10i0`` / ``-v1430``
-      - ``reducedR13`` combos
+    All combo lists and the v9e0 overlay are located by merging every
+    ``rf-Parameters*`` extension layer into one view — 3GPP assigns unique field
+    names per layer, so this is collision-free and release-structure-agnostic.
 
-    These leave the corresponding :class:`EutraCaCombination` fields at their
-    defaults (``None`` for optional bools / bcs; ``"main"`` for ``source``).
+    **Still deferred (FR-15)**: per-combo extension flags (256QAM-DL / 64QAM-UL /
+    1024QAM-DL) from ``-v1090`` / ``-v10i0`` / ``-v1430``.
     """
     flat = _flatten_extensions(decoded)
-
-    # Base-section release.
     access_stratum_release = flat.get("accessStratumRelease", "rel8")
 
-    # supportedBands from rf-Parameters.supportedBandListEUTRA.
-    rf_params = flat.get("rf-Parameters", {})
-    supported_band_list = rf_params.get("supportedBandListEUTRA", []) or []
-    supported_bands: list[EutraBand] = []
-    for entry in supported_band_list:
-        if not isinstance(entry, dict):
-            continue
-        band_num = entry.get("bandEUTRA")
-        if band_num is None:
-            continue
-        supported_bands.append(
-            EutraBand(
-                band=int(band_num),
-                halfDuplex=bool(entry.get("halfDuplex", False)),
-            )
-        )
+    # Merge all rf-Parameters* layers (base + every -vXXXX) into one view. The
+    # lists we need live across layers: supportedBandListEUTRA→rf-Parameters,
+    # -v9e0→v9e0, r10→v1020, Ext-r10→v1060, Add-r11→v1180, Reduced-r13→v1310.
+    rf_all: dict = {}
+    for key, val in flat.items():
+        if (key == "rf-Parameters" or key.startswith("rf-Parameters-")) and isinstance(val, dict):
+            rf_all.update(val)
 
-    # Main combo list lives in the v1020 extension layer.
-    rf_params_v1020 = flat.get("rf-Parameters-v1020")
-    main_combos_raw: list = []
-    if isinstance(rf_params_v1020, dict):
-        main_combos_raw = (
-            rf_params_v1020.get("supportedBandCombination-r10") or []
-        )
+    supported_bands = _map_eutra_supported_bands(rf_all)
 
     ca_combinations: list[EutraCaCombination] = []
-    for idx, combo_entry in enumerate(main_combos_raw):
-        ca_combinations.append(_map_eutra_combo_r10(idx, combo_entry))
+
+    # Main Rel-10 list; BCS comes from the index-parallel Ext-r10 list.
+    main_raw = rf_all.get("supportedBandCombination-r10") or []
+    ext_raw = rf_all.get("supportedBandCombinationExt-r10") or []
+    for src_i, combo_entry in enumerate(main_raw):
+        ext_entry = ext_raw[src_i] if src_i < len(ext_raw) and isinstance(ext_raw[src_i], dict) else None
+        bcs = (
+            _bcs_positions(ext_entry.get("supportedBandwidthCombinationSet-r10"))
+            if ext_entry is not None
+            else None
+        )
+        ca_combinations.append(_map_eutra_combo_r10(len(ca_combinations), combo_entry, bcs=bcs))
+
+    # Rel-11 Add list (wrapped, inline BCS) — FR-2 parity.
+    for combo in rf_all.get("supportedBandCombinationAdd-r11") or []:
+        c = _map_eutra_combo_wrapped(
+            len(ca_combinations), combo, source="addR11",
+            band_list_key="bandParameterList-r11",
+            bcs_key="supportedBandwidthCombinationSet-r11",
+            band_mapper=lambda bp: _map_eutra_band_params_r10(
+                bp,
+                band_field="bandEUTRA-r11",
+                dl_field="bandParametersDL-r11",
+                ul_field="bandParametersUL-r11",
+            ),
+        )
+        if c is not None:
+            ca_combinations.append(c)
+
+    # Rel-13 Reduced list (wrapped, inline BCS) — FR-27.
+    for combo in rf_all.get("supportedBandCombinationReduced-r13") or []:
+        c = _map_eutra_combo_wrapped(
+            len(ca_combinations), combo, source="reducedR13",
+            band_list_key="bandParameterList-r13",
+            bcs_key="supportedBandwidthCombinationSet-r13",
+            band_mapper=_map_eutra_band_params_r13,
+        )
+        if c is not None:
+            ca_combinations.append(c)
 
     return EutraSection(
         accessStratumRelease=str(access_stratum_release),
@@ -853,14 +874,16 @@ def _map_eutra_from_dict(decoded: dict) -> EutraSection:
     )
 
 
-def _map_eutra_combo_r10(idx: int, combo_entry: list | dict) -> EutraCaCombination:
+def _map_eutra_combo_r10(
+    idx: int, combo_entry: list | dict, *, bcs: list[int] | None = None
+) -> EutraCaCombination:
     """Map one entry of ``supportedBandCombination-r10`` to :class:`EutraCaCombination`.
 
     The Rel-10 grammar is ``SupportedBandCombination-r10 ::= SEQUENCE (SIZE
     (..)) OF BandCombinationParameters-r10``; pycrate decodes each combo as a
-    list of band-parameter dicts. Older spec variants (Rel-11 wrapped each
-    combo in ``bandParameterList-r11``); pycrate's Rel-17 schema produces the
-    Rel-10 inline shape regardless of input release.
+    list of band-parameter dicts. ``bcs`` (set-bit positions) comes from the
+    index-parallel ``supportedBandCombinationExt-r10`` list and is passed in by
+    the caller so the model is constructed in one shot (no post-build mutation).
     """
     # combo_entry is a list of band-parameter dicts.
     band_list = combo_entry if isinstance(combo_entry, list) else []
@@ -871,13 +894,11 @@ def _map_eutra_combo_r10(idx: int, combo_entry: list | dict) -> EutraCaCombinati
             continue
         band_entries.append(_map_eutra_band_params_r10(bp))
 
-    label = _format_eutra_combo_label(band_entries)
-
     return EutraCaCombination(
         combinationId=idx,
-        label=label,
+        label=_format_eutra_combo_label(band_entries),
         bands=band_entries,
-        bcs=None,
+        bcs=bcs,
         supports256QAMDL=None,
         supports64QAMUL=None,
         supports1024QAMDL=None,
@@ -885,17 +906,29 @@ def _map_eutra_combo_r10(idx: int, combo_entry: list | dict) -> EutraCaCombinati
     )
 
 
-def _map_eutra_band_params_r10(bp: dict) -> EutraComboBandEntry:
-    """Map one ``BandParameters-r10`` dict to :class:`EutraComboBandEntry`."""
-    band_eutra = bp.get("bandEUTRA-r10")
+def _map_eutra_band_params_r10(
+    bp: dict,
+    *,
+    band_field: str = "bandEUTRA-r10",
+    dl_field: str = "bandParametersDL-r10",
+    ul_field: str = "bandParametersUL-r10",
+) -> EutraComboBandEntry:
+    """Map one ``BandParameters-r10`` (or ``-r11``) dict to :class:`EutraComboBandEntry`.
+
+    Rel-11's ``BandParameters-r11`` keeps the Rel-10 SEQUENCE-OF DL/UL shape and
+    the inner ``ca-BandwidthClass*-r10`` / ``supportedMIMO-Capability*-r10`` field
+    names, but renames the outer band-number and ``bandParameters{DL,UL}`` fields
+    to ``-r11`` — pass ``band_field`` / ``dl_field`` / ``ul_field`` to select them.
+    """
+    band_eutra = bp.get(band_field)
     band = int(band_eutra) if band_eutra is not None else 0
 
-    # DL: bandParametersDL-r10 SEQUENCE OF { ca-BandwidthClassDL-r10, supportedMIMO-CapabilityDL-r10 OPT }
+    # DL: SEQUENCE OF { ca-BandwidthClassDL-r10, supportedMIMO-CapabilityDL-r10 OPT }
     # In TS 36.331 there's typically zero or one BW class per direction; pycrate
     # produces a list. We take the first entry's class as the canonical value.
     dl_class = None
     dl_layers = None
-    dl_list = bp.get("bandParametersDL-r10") or []
+    dl_list = bp.get(dl_field) or []
     if dl_list and isinstance(dl_list[0], dict):
         dl0 = dl_list[0]
         dl_class_raw = dl0.get("ca-BandwidthClassDL-r10")
@@ -907,7 +940,7 @@ def _map_eutra_band_params_r10(bp: dict) -> EutraComboBandEntry:
 
     ul_class = None
     ul_layers = None
-    ul_list = bp.get("bandParametersUL-r10") or []
+    ul_list = bp.get(ul_field) or []
     if ul_list and isinstance(ul_list[0], dict):
         ul0 = ul_list[0]
         ul_class_raw = ul0.get("ca-BandwidthClassUL-r10")
@@ -916,6 +949,113 @@ def _map_eutra_band_params_r10(bp: dict) -> EutraComboBandEntry:
         ul_layers_raw = ul0.get("supportedMIMO-CapabilityUL-r10")
         if ul_layers_raw is not None:
             ul_layers = _normalize_mimo_capability(ul_layers_raw)
+
+    return EutraComboBandEntry(
+        band=band,
+        caBandwidthClassDL=dl_class,
+        caBandwidthClassUL=ul_class,
+        maxLayersDL=dl_layers,
+        maxLayersUL=ul_layers,
+    )
+
+
+def _map_eutra_supported_bands(rf_all: dict) -> list[EutraBand]:
+    """Build the EUTRA supported-band list, applying the v9e0 overlay (``FR-26``).
+
+    ``supportedBandListEUTRA-v9e0`` is an index-parallel list (same length, same
+    order, per TS 36.331); where an entry carries ``bandEUTRA-v9e0`` it overrides
+    the base ``bandEUTRA`` (pinned to the 64 placeholder for bands above 64).
+    """
+    base = rf_all.get("supportedBandListEUTRA") or []
+    v9e0 = rf_all.get("supportedBandListEUTRA-v9e0") or []
+    bands: list[EutraBand] = []
+    for i, entry in enumerate(base):
+        if not isinstance(entry, dict):
+            continue
+        band_num = entry.get("bandEUTRA")
+        if band_num is None:
+            continue
+        if i < len(v9e0) and isinstance(v9e0[i], dict):
+            override = v9e0[i].get("bandEUTRA-v9e0")
+            if override is not None:
+                band_num = override
+        bands.append(
+            EutraBand(band=int(band_num), halfDuplex=bool(entry.get("halfDuplex", False)))
+        )
+    return bands
+
+
+def _bcs_positions(bs: object) -> list[int] | None:
+    """BCS BIT STRING → set-bit positions (e.g. ``'1111'`` → ``[0,1,2,3]``).
+
+    Matches the indented adapter's `_parse_binary_string` convention so the two
+    formats stay equivalent under ``NFR-9``.
+    """
+    bits = _bit_string_to_list(bs)
+    if bits is None:
+        return None
+    return [i for i, b in enumerate(bits) if b]
+
+
+def _map_eutra_combo_wrapped(
+    idx: int,
+    combo: object,
+    *,
+    source: str,
+    band_list_key: str,
+    bcs_key: str,
+    band_mapper,
+) -> EutraCaCombination | None:
+    """Map a wrapped EUTRA combo (Add-r11 / Reduced-r13 shape) to a combination.
+
+    Both wrap their per-CC entries in a ``bandParameterList-rXX`` field and carry
+    an inline ``supportedBandwidthCombinationSet-rXX`` BCS bitmap, unlike the bare
+    Rel-10 list. ``band_mapper`` maps one per-CC entry to an `EutraComboBandEntry`.
+    """
+    if not isinstance(combo, dict):
+        return None
+    entries: list[EutraComboBandEntry] = []
+    for bp in combo.get(band_list_key) or []:
+        if isinstance(bp, dict):
+            entry = band_mapper(bp)
+            if entry is not None:
+                entries.append(entry)
+    if not entries:
+        return None
+    return EutraCaCombination(
+        combinationId=idx,
+        label=_format_eutra_combo_label(entries),
+        bands=entries,
+        bcs=_bcs_positions(combo.get(bcs_key)),
+        source=source,  # type: ignore[arg-type]
+    )
+
+
+def _map_eutra_band_params_r13(bp: dict) -> EutraComboBandEntry:
+    """Map one ``BandParameters-r13`` dict to :class:`EutraComboBandEntry`.
+
+    Unlike Rel-10/11, the Rel-13 ``bandParameters{DL,UL}-r13`` are single
+    SEQUENCEs (not SEQUENCE-OF), and the DL inner fields carry the ``-r13``
+    suffix while the UL inner fields re-use the ``-r10`` names.
+    """
+    band_eutra = bp.get("bandEUTRA-r13")
+    band = int(band_eutra) if band_eutra is not None else 0
+
+    dl = bp.get("bandParametersDL-r13")
+    dl_class = dl_layers = None
+    if isinstance(dl, dict):
+        if dl.get("ca-BandwidthClassDL-r13") is not None:
+            dl_class = _normalize_ca_bw_class(dl.get("ca-BandwidthClassDL-r13"))
+        if dl.get("supportedMIMO-CapabilityDL-r13") is not None:
+            dl_layers = _normalize_mimo_capability(dl.get("supportedMIMO-CapabilityDL-r13"))
+
+    ul = bp.get("bandParametersUL-r13")
+    ul_class = ul_layers = None
+    if isinstance(ul, dict):
+        if ul.get("ca-BandwidthClassUL-r10") is not None:
+            ul_class = _normalize_ca_bw_class(ul.get("ca-BandwidthClassUL-r10"))
+        if ul.get("supportedMIMO-CapabilityUL-r10") is not None:
+            ul_layers = _normalize_mimo_capability(ul.get("supportedMIMO-CapabilityUL-r10"))
 
     return EutraComboBandEntry(
         band=band,
