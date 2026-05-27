@@ -761,31 +761,41 @@ def infer_release(value: object) -> str | None:
 
 
 def _flatten_extensions(decoded: dict) -> dict:
-    """Walk the ``nonCriticalExtension`` chain and merge each layer's fields
-    into a flat dict.
+    """Walk the ``nonCriticalExtension`` chain *and* any ``CONTAINING``
+    ``lateNonCriticalExtension`` blobs, merging every layer's fields into one dict.
 
     3GPP RRC adds per-release fields under a chained ``nonCriticalExtension``
-    sub-SEQUENCE: ``UE-EUTRA-Capability → V920-IEs → V940-IEs → V1020-IEs →
-    …``. Each layer's fields are non-overlapping (3GPP assigns unique names
-    like ``rf-Parameters-v1020``, ``rf-Parameters-v1090``, etc.), so a flat
-    merge is unambiguous.
+    sub-SEQUENCE (``UE-EUTRA-Capability → v920 → v940 → v1020 → … → v1310 → …``).
+    Separately, the *late* Rel-9+ IEs — ``v9c0`` / ``v9d0`` / ``v9e0`` / ``v9h0`` /
+    ``v10c0`` / ``v10i0`` / … , including the ``supportedBandListEUTRA-v9e0`` band
+    overlay — live behind a ``lateNonCriticalExtension OCTET STRING CONTAINING
+    UE-EUTRA-Capability-v9a0-IEs`` at the v940 layer. pycrate auto-decodes that
+    into a ``(type-name, inner-dict)`` tuple; we descend into the inner dict's own
+    chain. 3GPP assigns unique version-tagged field names per layer, so the flat
+    merge stays collision-free.
 
-    Returns a dict with all encountered fields keyed by their original names;
-    ``nonCriticalExtension`` and ``lateNonCriticalExtension`` are consumed
+    ``nonCriticalExtension`` / ``lateNonCriticalExtension`` keys are consumed
     during the walk and not included in the result.
     """
     result: dict = {}
-    cur: dict | None = decoded
-    while cur is not None:
+    _merge_extension_chain(decoded, result)
+    return result
+
+
+def _merge_extension_chain(node: object, result: dict) -> None:
+    """Merge one ``nonCriticalExtension`` spine into ``result``, recursing into
+    any decoded ``lateNonCriticalExtension`` ``(type-name, inner-dict)`` tuple."""
+    cur = node
+    while isinstance(cur, dict):
         for k, v in cur.items():
-            if k in ("nonCriticalExtension", "lateNonCriticalExtension"):
+            if k == "nonCriticalExtension":
+                continue
+            if k == "lateNonCriticalExtension":
+                if isinstance(v, tuple) and len(v) == 2 and isinstance(v[1], dict):
+                    _merge_extension_chain(v[1], result)
                 continue
             result[k] = v
-        nxt = cur.get("nonCriticalExtension")
-        if not isinstance(nxt, dict):
-            break
-        cur = nxt
-    return result
+        cur = cur.get("nonCriticalExtension")
 
 
 def _map_eutra_from_dict(decoded: dict) -> EutraSection:

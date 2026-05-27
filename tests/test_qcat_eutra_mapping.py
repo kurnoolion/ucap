@@ -9,7 +9,7 @@ tuple form.
 
 from __future__ import annotations
 
-from ucap.adapters.qcat._asn1 import _map_eutra_from_dict
+from ucap.adapters.qcat._asn1 import _flatten_extensions, _map_eutra_from_dict
 from ucap.adapters.qcat._indented import TreeNode, _map_eutra
 
 
@@ -227,3 +227,49 @@ def test_combination_ids_contiguous_across_sources():
     assert [c.combinationId for c in sec.caCombinations] == [0, 1, 2]
     assert [c.source for c in sec.caCombinations] == ["main", "addR11", "reducedR13"]
     assert [c.label for c in sec.caCombinations] == ["2A", "7A", "66A"]
+
+
+# ─── lateNonCriticalExtension chain (the real-log root cause) ───────
+#
+# pycrate decodes `OCTET STRING CONTAINING UE-EUTRA-Capability-v9a0-IEs` as a
+# (type-name, inner-dict) tuple; these fixtures mimic that exact shape.
+
+
+def test_flatten_descends_into_late_noncritical_extension():
+    decoded = {
+        "accessStratumRelease": "rel13",
+        "rf-Parameters": {"supportedBandListEUTRA": [{"bandEUTRA": 2}]},
+        "nonCriticalExtension": {  # v920
+            "nonCriticalExtension": {  # v940
+                "lateNonCriticalExtension": (
+                    "UE-EUTRA-Capability-v9a0-IEs",
+                    {"nonCriticalExtension": {"nonCriticalExtension": {"nonCriticalExtension": {
+                        "rf-Parameters-v9e0": {"supportedBandListEUTRA-v9e0": [{"bandEUTRA-v9e0": 66}]}
+                    }}}},
+                ),
+                "nonCriticalExtension": {  # v1020 — main chain continues past v940
+                    "rf-Parameters-v1020": {"supportedBandCombination-r10": []}
+                },
+            }
+        },
+    }
+    flat = _flatten_extensions(decoded)
+    assert "rf-Parameters" in flat          # base spine
+    assert "rf-Parameters-v9e0" in flat     # recovered from the late chain
+    assert "rf-Parameters-v1020" in flat    # main spine continues past v940
+
+
+def test_v9e0_overlay_reached_via_late_extension_end_to_end():
+    decoded = {
+        "rf-Parameters": {"supportedBandListEUTRA": [{"bandEUTRA": 2}, {"bandEUTRA": 64}]},
+        "nonCriticalExtension": {
+            "lateNonCriticalExtension": (
+                "UE-EUTRA-Capability-v9a0-IEs",
+                {"nonCriticalExtension": {"nonCriticalExtension": {"nonCriticalExtension": {
+                    "rf-Parameters-v9e0": {"supportedBandListEUTRA-v9e0": [{}, {"bandEUTRA-v9e0": 71}]}
+                }}}},
+            ),
+        },
+    }
+    sec = _map_eutra_from_dict(decoded)
+    assert [b.band for b in sec.supportedBands] == [2, 71]
